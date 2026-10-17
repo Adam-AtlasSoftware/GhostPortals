@@ -1,0 +1,12 @@
+{
+  "uuid": "ghostportals@ghostportals.io",
+  "name": "Ghost Portals",
+  "description": "Exposes window geometry and moves over DBus for the ghostportals-linux daemon.",
+  "shell-version": [
+    "45",
+    "46",
+    "47",
+    "48",
+    "49"
+  ]
+}
