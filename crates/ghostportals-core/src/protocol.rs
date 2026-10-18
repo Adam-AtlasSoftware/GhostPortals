@@ -33,6 +33,12 @@ pub enum Message {
     KeyframeRequest {
         stream: u32,
     },
+    /// The user is using the proxy of `session_id`; the source replays the
+    /// event on the real window.
+    Input {
+        session_id: String,
+        event: InputEvent,
+    },
     /// The user is dragging the proxy of `session_id`; its top-left corner
     /// is now at canvas `(x, y)`. The source moves the real window there, so
     /// moving either one moves both.
@@ -47,6 +53,44 @@ pub enum Message {
     Pong {
         seq: u64,
     },
+}
+
+/// Input on a proxy, in the real window's own coordinates: (0, 0) is the
+/// top-left corner of its visible frame, decorations included.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InputEvent {
+    PointerMove {
+        x: f64,
+        y: f64,
+    },
+    Button {
+        button: PointerButton,
+        pressed: bool,
+    },
+    /// Wheel movement in notches; positive is down / right.
+    Scroll {
+        dx: f64,
+        dy: f64,
+    },
+    /// A physical key, as a Linux evdev code (`KEY_A` = 30), whatever the
+    /// keyboard layout. The source applies its own layout.
+    Key {
+        code: u32,
+        pressed: bool,
+    },
+    /// The pointer left the proxy.
+    Leave,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PointerButton {
+    Left,
+    Middle,
+    Right,
+    Back,
+    Forward,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -130,6 +174,22 @@ mod tests {
             })
         );
         assert_eq!(serde_json::from_value::<Message>(json).unwrap(), msg);
+    }
+
+    #[test]
+    fn input_shape() {
+        let msg = Message::Input {
+            session_id: "handoff-3".into(),
+            event: InputEvent::Button { button: PointerButton::Left, pressed: true },
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "input",
+                "session_id": "handoff-3",
+                "event": { "kind": "button", "button": "left", "pressed": true }
+            })
+        );
     }
 
     #[test]
