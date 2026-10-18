@@ -1,0 +1,44 @@
+[package]
+name = "ghostportals-gui"
+description = "Ghost Portals manager and Windows installer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ghostportals"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+dirs = "7"
+open = "5"
+semver = "1"
+sha2 = "0.11"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+
+[build-dependencies]
+winresource = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+ureq = { version = "3", features = ["json"] }
+
+[target.'cfg(windows)'.dependencies]
+# Windows' own TLS (SChannel) and certificate store: no C toolchain needed,
+# and it trusts whatever the machine trusts.
+ureq = { version = "3", default-features = false, features = ["json", "gzip", "native-tls"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_JobObjects",
+    "Win32_Security",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+] }

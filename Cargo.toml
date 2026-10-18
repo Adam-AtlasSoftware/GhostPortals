@@ -5,10 +5,11 @@ members = [
     "crates/ghostportals-media",
     "crates/ghostportals-linux",
     "crates/ghostportals-windows",
+    "crates/ghostportals-gui",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-alpha.6"
 edition = "2024"
 license = "GPL-3.0-or-later"
 
