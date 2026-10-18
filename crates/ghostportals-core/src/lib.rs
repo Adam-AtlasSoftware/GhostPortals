@@ -9,5 +9,7 @@ pub mod protocol;
 
 pub use geometry::{Rect, ScreenEdge, Side};
 pub use handoff::{HandoffLog, HandoffTracker};
-pub use link::{Endpoint, Link, LinkEvent};
-pub use protocol::{Direction, EdgeDelta, Hello, Message, PROTOCOL_VERSION, SyncPacket, WindowDim};
+pub use link::{Endpoint, Link, LinkEvent, VideoFrame, VideoSender};
+pub use protocol::{
+    Direction, EdgeDelta, Hello, Message, PROTOCOL_VERSION, StreamInfo, SyncPacket, WindowDim,
+};

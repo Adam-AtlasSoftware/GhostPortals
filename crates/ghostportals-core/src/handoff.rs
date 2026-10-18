@@ -32,6 +32,16 @@ impl HandoffTracker {
         self.edge = edge;
     }
 
+    /// The window currently crossing, if any.
+    pub fn window(&self) -> Option<&str> {
+        self.active.as_ref().map(|a| a.window_id.as_str())
+    }
+
+    /// The session currently open, if any.
+    pub fn session(&self) -> Option<&str> {
+        self.active.as_ref().map(|a| a.session_id.as_str())
+    }
+
     /// Feeds the latest local geometry of `window_id`. Returns the message to
     /// send, if anything changed.
     pub fn sample(&mut self, window_id: &str, local: Rect, dragging: bool) -> Option<Message> {

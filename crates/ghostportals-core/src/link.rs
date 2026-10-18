@@ -8,6 +8,12 @@
 //! Messages sent while no peer is connected are discarded: every sync packet
 //! carries the full current state, so replaying stale ones would only make the
 //! proxy window jump.
+//!
+//! Every frame starts with a tag byte: [`TAG_MESSAGE`] frames carry one JSON
+//! [`Message`], [`TAG_VIDEO`] frames one encoded [`VideoFrame`]. Video shares
+//! the connection so the daemons need only one port, and has its own small
+//! queue that drops instead of waiting, so a slow network never delays sync
+//! messages behind a backlog of stale video.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -22,7 +28,12 @@ use tracing::{debug, info, warn};
 
 use crate::protocol::{Hello, Message, PROTOCOL_VERSION};
 
-const MAX_FRAME: usize = 1 << 20;
+/// Large enough for a keyframe of a big window at a generous bitrate.
+const MAX_FRAME: usize = 16 << 20;
+const TAG_MESSAGE: u8 = 0;
+const TAG_VIDEO: u8 = 1;
+/// About a sixth of a second at 60 fps.
+const VIDEO_QUEUE: usize = 10;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 const HEARTBEAT: Duration = Duration::from_secs(1);
 const PEER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -38,7 +49,64 @@ pub enum Endpoint {
 pub enum LinkEvent {
     Connected(Hello),
     Message(Message),
+    Video(VideoFrame),
     Disconnected,
+}
+
+/// One encoded access unit of a window stream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoFrame {
+    pub stream: u32,
+    pub keyframe: bool,
+    /// Capture time in microseconds, on the sender's clock.
+    pub pts_us: u64,
+    pub data: Bytes,
+}
+
+impl VideoFrame {
+    const HEADER: usize = 1 + 4 + 1 + 8;
+
+    fn encode(&self) -> Bytes {
+        let mut out = Vec::with_capacity(Self::HEADER + self.data.len());
+        out.push(TAG_VIDEO);
+        out.extend_from_slice(&self.stream.to_be_bytes());
+        out.push(self.keyframe as u8);
+        out.extend_from_slice(&self.pts_us.to_be_bytes());
+        out.extend_from_slice(&self.data);
+        out.into()
+    }
+
+    fn decode(frame: &[u8]) -> Option<Self> {
+        if frame.len() < Self::HEADER || frame[0] != TAG_VIDEO {
+            return None;
+        }
+        Some(Self {
+            stream: u32::from_be_bytes(frame[1..5].try_into().ok()?),
+            keyframe: frame[5] != 0,
+            pts_us: u64::from_be_bytes(frame[6..14].try_into().ok()?),
+            data: Bytes::copy_from_slice(&frame[Self::HEADER..]),
+        })
+    }
+}
+
+/// Hands encoded video to the link from any thread (a GStreamer streaming
+/// thread, typically).
+#[derive(Debug, Clone)]
+pub struct VideoSender(mpsc::Sender<VideoFrame>);
+
+impl VideoSender {
+    /// A sender not tied to a link, for local pipelines and tests.
+    pub fn channel(capacity: usize) -> (Self, mpsc::Receiver<VideoFrame>) {
+        let (tx, rx) = mpsc::channel(capacity);
+        (Self(tx), rx)
+    }
+
+    /// Queues a frame. Returns false when it was dropped because the queue is
+    /// full; the encoder should then force a keyframe so the receiver can
+    /// recover.
+    pub fn send(&self, frame: VideoFrame) -> bool {
+        self.0.try_send(frame).is_ok()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -47,6 +115,8 @@ pub enum LinkError {
     Io(#[from] std::io::Error),
     #[error("bad frame: {0}")]
     Decode(#[from] serde_json::Error),
+    #[error("bad frame tag {0}")]
+    Tag(u8),
     #[error("peer closed the connection")]
     Closed,
     #[error("no hello from peer within {0:?}")]
@@ -63,6 +133,7 @@ pub enum LinkError {
 
 pub struct Link {
     tx: mpsc::Sender<Message>,
+    video: VideoSender,
     rx: mpsc::Receiver<LinkEvent>,
 }
 
@@ -85,9 +156,10 @@ impl Link {
             Endpoint::Connect(_) => None,
         };
         let (out_tx, out_rx) = mpsc::channel(64);
+        let (video_tx, video_rx) = mpsc::channel(VIDEO_QUEUE);
         let (ev_tx, ev_rx) = mpsc::channel(64);
-        tokio::spawn(run(endpoint, listener, hello, expected_token, out_rx, ev_tx));
-        Ok(Self { tx: out_tx, rx: ev_rx })
+        tokio::spawn(run(endpoint, listener, hello, expected_token, out_rx, video_rx, ev_tx));
+        Ok(Self { tx: out_tx, video: VideoSender(video_tx), rx: ev_rx })
     }
 
     /// Queues a message for the peer. Never blocks the caller; when the queue
@@ -96,6 +168,10 @@ impl Link {
         if self.tx.try_send(msg).is_err() {
             debug!("link queue full, dropping message");
         }
+    }
+
+    pub fn video_sender(&self) -> VideoSender {
+        self.video.clone()
     }
 
     pub async fn recv(&mut self) -> Option<LinkEvent> {
@@ -111,6 +187,7 @@ async fn run(
     hello: Hello,
     expected_token: Option<String>,
     mut out_rx: mpsc::Receiver<Message>,
+    mut video_rx: mpsc::Receiver<VideoFrame>,
     ev_tx: mpsc::Sender<LinkEvent>,
 ) {
     let mut backoff = Duration::from_millis(250);
@@ -159,11 +236,12 @@ async fn run(
         };
         backoff = Duration::from_millis(250);
         while out_rx.try_recv().is_ok() {}
+        while video_rx.try_recv().is_ok() {}
         if ev_tx.send(LinkEvent::Connected(peer)).await.is_err() {
             return;
         }
 
-        let result = session(&mut conn, &mut out_rx, &ev_tx).await;
+        let result = session(&mut conn, &mut out_rx, &mut video_rx, &ev_tx).await;
         match result {
             Ok(()) => return, // the owning Link was dropped
             Err(e) => warn!("link lost: {e}"),
@@ -175,13 +253,27 @@ async fn run(
 }
 
 async fn send(conn: &mut Conn, msg: &Message) -> Result<(), LinkError> {
-    conn.send(Bytes::from(serde_json::to_vec(msg)?)).await?;
+    let mut frame = vec![TAG_MESSAGE];
+    serde_json::to_writer(&mut frame, msg)?;
+    conn.send(Bytes::from(frame)).await?;
     Ok(())
 }
 
-async fn next(conn: &mut Conn) -> Result<Message, LinkError> {
+enum Incoming {
+    Message(Message),
+    Video(VideoFrame),
+}
+
+async fn next(conn: &mut Conn) -> Result<Incoming, LinkError> {
     let frame = conn.next().await.ok_or(LinkError::Closed)??;
-    Ok(serde_json::from_slice(&frame)?)
+    match frame.first() {
+        Some(&TAG_MESSAGE) => Ok(Incoming::Message(serde_json::from_slice(&frame[1..])?)),
+        Some(&TAG_VIDEO) => {
+            VideoFrame::decode(&frame).map(Incoming::Video).ok_or(LinkError::Tag(TAG_VIDEO))
+        }
+        Some(&tag) => Err(LinkError::Tag(tag)),
+        None => Err(LinkError::Tag(0xff)),
+    }
 }
 
 async fn handshake(
@@ -190,9 +282,12 @@ async fn handshake(
     expected_token: Option<&str>,
 ) -> Result<Hello, LinkError> {
     send(conn, &Message::Hello(hello.clone())).await?;
-    let msg = timeout(HANDSHAKE_TIMEOUT, next(conn))
+    let incoming = timeout(HANDSHAKE_TIMEOUT, next(conn))
         .await
         .map_err(|_| LinkError::HandshakeTimeout(HANDSHAKE_TIMEOUT))??;
+    let Incoming::Message(msg) = incoming else {
+        return Err(LinkError::Tag(TAG_VIDEO));
+    };
     let Message::Hello(peer) = msg else {
         return Err(LinkError::NoHello(msg));
     };
@@ -213,6 +308,7 @@ async fn handshake(
 async fn session(
     conn: &mut Conn,
     out_rx: &mut mpsc::Receiver<Message>,
+    video_rx: &mut mpsc::Receiver<VideoFrame>,
     ev_tx: &mpsc::Sender<LinkEvent>,
 ) -> Result<(), LinkError> {
     let mut heartbeat = interval(HEARTBEAT);
@@ -222,21 +318,30 @@ async fn session(
 
     loop {
         tokio::select! {
+            // Control messages first: a sync must never wait behind video.
+            biased;
             out = out_rx.recv() => match out {
                 Some(msg) => send(conn, &msg).await?,
                 None => return Ok(()),
             },
-            msg = next(conn) => {
+            Some(frame) = video_rx.recv() => conn.send(frame.encode()).await?,
+            incoming = next(conn) => {
                 last_seen = Instant::now();
-                match msg? {
-                    Message::Ping { seq } => send(conn, &Message::Pong { seq }).await?,
-                    Message::Pong { .. } => {}
-                    Message::Hello(_) => debug!("ignoring repeated hello"),
-                    msg => {
-                        if ev_tx.send(LinkEvent::Message(msg)).await.is_err() {
-                            return Ok(());
-                        }
+                let event = match incoming? {
+                    Incoming::Message(Message::Ping { seq }) => {
+                        send(conn, &Message::Pong { seq }).await?;
+                        continue;
                     }
+                    Incoming::Message(Message::Pong { .. }) => continue,
+                    Incoming::Message(Message::Hello(_)) => {
+                        debug!("ignoring repeated hello");
+                        continue;
+                    }
+                    Incoming::Message(msg) => LinkEvent::Message(msg),
+                    Incoming::Video(frame) => LinkEvent::Video(frame),
+                };
+                if ev_tx.send(event).await.is_err() {
+                    return Ok(());
                 }
             }
             _ = heartbeat.tick() => {
@@ -303,6 +408,15 @@ mod tests {
         });
         client.send(msg.clone());
         assert_eq!(expect(&mut server).await, LinkEvent::Message(msg));
+
+        let frame = VideoFrame {
+            stream: 7,
+            keyframe: true,
+            pts_us: 123_456,
+            data: Bytes::from_static(&[0, 0, 0, 1, 0x65, 0xaa]),
+        };
+        assert!(client.video_sender().send(frame.clone()));
+        assert_eq!(expect(&mut server).await, LinkEvent::Video(frame));
 
         // Drop the client; the server notices and a new client gets through.
         drop(client);

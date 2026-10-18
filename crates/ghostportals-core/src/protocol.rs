@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -21,12 +21,44 @@ pub enum Message {
     Release {
         session_id: String,
     },
+    /// Video for `session_id` follows as `stream`. Sent again with the same
+    /// stream id when the window's size changes.
+    StreamStart(StreamInfo),
+    /// No more video for `stream`.
+    StreamEnd {
+        stream: u32,
+    },
+    /// The receiver lost its place (decoder error, dropped frames); the
+    /// sender should encode a keyframe as soon as possible.
+    KeyframeRequest {
+        stream: u32,
+    },
+    /// The user is dragging the proxy of `session_id`; its top-left corner
+    /// is now at canvas `(x, y)`. The source moves the real window there, so
+    /// moving either one moves both.
+    ProxyMoved {
+        session_id: String,
+        x: i32,
+        y: i32,
+    },
     Ping {
         seq: u64,
     },
     Pong {
         seq: u64,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StreamInfo {
+    pub stream: u32,
+    pub session_id: String,
+    /// Always "h264" (Annex B byte stream, one access unit per frame) for now.
+    pub codec: String,
+    pub width: i32,
+    pub height: i32,
+    /// Title of the source window, for the proxy's own title.
+    pub title: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
