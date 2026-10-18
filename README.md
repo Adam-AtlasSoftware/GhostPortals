@@ -45,7 +45,8 @@ Needs GStreamer (with the PipeWire, `libav` and bad plugins; your GPU's
 encoder plugin for hardware encoding) and GTK 4.
 
 ```sh
-cargo build --release -p ghostportals-linux
+cargo build --release -p ghostportals-linux -p ghostportals-gui
+./target/release/ghostportals                  # the app, or use the daemon directly:
 ./target/release/ghostportals-linux selftest   # can this machine encode and decode?
 ./target/release/ghostportals-linux watch      # print live window geometry
 ./target/release/ghostportals-linux run        # listen on 0.0.0.0:47800
@@ -70,18 +71,38 @@ one):
 
 ## Windows
 
-Download `ghostportals-windows.zip` from the
-[releases page](https://github.com/Adam-AtlasSoftware/GhostPortals/releases),
-unpack it anywhere, and run from a terminal in that folder:
+Download **`GhostPortalsSetup.exe`** from the
+[releases page](https://github.com/Adam-AtlasSoftware/GhostPortals/releases)
+and run it. It fetches the newest version from GitHub, checks its SHA-256,
+installs it for your user (no administrator rights) into
+`%LOCALAPPDATA%\Programs\Ghost Portals`, and adds a Start menu shortcut and,
+if you like, a desktop shortcut and "start when I log in". Remove it from
+Settings → Apps.
 
-```powershell
-.\ghostportals-windows.exe selftest
-.\ghostportals-windows.exe run --connect linux-box:47800
-```
+The installed **Ghost Portals** app starts and stops sharing, shows what is
+going on, and installs updates itself when a new release appears.
 
-The zip carries its own GStreamer, so nothing else needs installing. To build
-it yourself, install GStreamer's MSVC development package and `pkg-config`,
-then `cargo build --release -p ghostportals-windows`.
+Prefer a terminal? `ghostportals-windows.zip` holds the same files: unpack it
+and run `ghostportals-windows.exe run --connect linux-box:47800`. It carries
+its own GStreamer. To build it yourself, install GStreamer's MSVC development
+package and `pkg-config`, then
+`cargo build --release -p ghostportals-windows -p ghostportals-gui`.
+
+## The Ghost Portals app
+
+`ghostportals` (`ghostportals.exe` on Windows) is a small window for running
+the daemon without a terminal, on both systems:
+
+- start and stop sharing, with the connection, the window being sent or
+  received, and the encoder and decoder in use;
+- settings: wait for the other computer or connect to it, shared secret,
+  start when you log in;
+- a self-test button and the daemon's live log;
+- update checks against GitHub releases (Windows installs them; Linux points
+  you to the release).
+
+It runs the daemon found beside it (or on `PATH`) and stops it when it
+closes.
 
 ## Both sides
 

@@ -31,11 +31,13 @@ jobs:
       - run: cargo test --workspace
       - name: Media self-test
         run: cargo run -p ghostportals-media --example selftest
-      - run: cargo build --release -p ghostportals-linux
+      - run: cargo build --release -p ghostportals-linux -p ghostportals-gui
       - uses: actions/upload-artifact@v4
         with:
           name: ghostportals-linux
-          path: target/release/ghostportals-linux
+          path: |
+            target/release/ghostportals-linux
+            target/release/ghostportals
 
   windows:
     runs-on: windows-latest
@@ -54,15 +56,15 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -p ghostportals-windows -p ghostportals-media -- -D warnings
-      - run: cargo test -p ghostportals-core
-      - run: cargo build --release -p ghostportals-windows
+      - run: cargo clippy -p ghostportals-windows -p ghostportals-media -p ghostportals-gui -- -D warnings
+      - run: cargo test -p ghostportals-core -p ghostportals-gui
+      - run: cargo build --release -p ghostportals-windows -p ghostportals-gui
       - name: Package with GStreamer
         shell: pwsh
         run: |
           $out = "dist\ghostportals-windows"
           New-Item -ItemType Directory -Force "$out\gstreamer\plugins" | Out-Null
-          Copy-Item target\release\ghostportals-windows.exe $out
+          Copy-Item target\release\ghostportals-windows.exe, target\release\ghostportals.exe $out
           Copy-Item C:\gst\bin\*.dll $out
           Copy-Item C:\gst\libexec\gstreamer-1.0\gst-plugin-scanner.exe "$out\gstreamer" -ErrorAction SilentlyContinue
           $plugins = 'coreelements','app','videoconvertscale','videotestsrc','videoparsersbad',
@@ -71,16 +73,44 @@ jobs:
           Copy-Item LICENSE, packaging\windows\README.txt $out
           Compress-Archive -Path $out -DestinationPath dist\ghostportals-windows.zip
           "{0:N1} MB" -f ((Get-Item dist\ghostportals-windows.zip).Length / 1MB)
+          # The online installer is the manager under another name.
+          Copy-Item target\release\ghostportals.exe dist\GhostPortalsSetup.exe
       - name: Self-test the package
         shell: pwsh
         run: |
           # Run from the package with the system install hidden, as a user would.
           $env:PATH = "C:\Windows\System32;C:\Windows"
           dist\ghostportals-windows\ghostportals-windows.exe selftest
+      - name: Install, check and uninstall
+        shell: pwsh
+        run: |
+          function Run($exe, $argv) {
+            $p = Start-Process $exe -ArgumentList $argv -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "$exe $argv exited with $($p.ExitCode)" }
+          }
+          Run dist\GhostPortalsSetup.exe '--silent','--from-zip',"$PWD\dist\ghostportals-windows.zip"
+          $dir = "$env:LOCALAPPDATA\Programs\Ghost Portals"
+          foreach ($f in 'ghostportals.exe','ghostportals-windows.exe','version.txt','gstreamer\plugins\gstapp.dll') {
+            if (-not (Test-Path "$dir\$f")) { throw "missing $f" }
+          }
+          "installed version: $(Get-Content "$dir\version.txt")"
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\GhostPortals'
+          Get-ItemProperty $key | Select-Object DisplayName, DisplayVersion, UninstallString
+          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Ghost Portals.lnk")) { throw "no Start menu shortcut" }
+          $env:PATH = "C:\Windows\System32;C:\Windows"
+          & "$dir\ghostportals-windows.exe" selftest
+          if ($LASTEXITCODE -ne 0) { throw "installed selftest failed" }
+          Run "$dir\ghostportals.exe" '--uninstall','--silent'
+          Start-Sleep 6
+          if (Test-Path $key) { throw "uninstall entry left behind" }
+          if (Test-Path $dir) { throw "install folder left behind" }
+          "uninstalled cleanly"
       - uses: actions/upload-artifact@v4
         with:
           name: ghostportals-windows
-          path: dist/ghostportals-windows.zip
+          path: |
+            dist/ghostportals-windows.zip
+            dist/GhostPortalsSetup.exe
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -89,12 +119,19 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+      # The manager compares its own version with release tags.
+      - name: Tag matches the crate version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != v$version"; exit 1; }
       - uses: actions/download-artifact@v4
       # Tags with a suffix (v0.1.0-alpha.1) are published as pre-releases.
       - run: |
           flags=""
           case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes $flags \
-            ghostportals-linux/ghostportals-linux ghostportals-windows/ghostportals-windows.zip
+            ghostportals-linux/ghostportals-linux ghostportals-linux/ghostportals \
+            ghostportals-windows/ghostportals-windows.zip ghostportals-windows/GhostPortalsSetup.exe
         env:
           GH_TOKEN: ${{ github.token }}

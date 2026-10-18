@@ -1,7 +1,11 @@
 Ghost Portals for Windows
 =========================
 
-Run from a terminal in this folder:
+The easy way is GhostPortalsSetup.exe from the releases page, which installs
+this folder for you and keeps it up to date.
+
+To use it as is: open ghostportals.exe (the app), or run from a terminal in
+this folder:
 
   ghostportals-windows.exe selftest
   ghostportals-windows.exe run --connect <linux-host>:47800
