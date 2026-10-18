@@ -92,6 +92,50 @@ impl HandoffTracker {
     }
 }
 
+/// Logs handoffs at a readable rate: one line when a session starts or ends,
+/// with the per-frame packets left to debug level.
+#[derive(Debug, Default)]
+pub struct HandoffLog {
+    outgoing: Option<String>,
+    incoming: Option<String>,
+}
+
+impl HandoffLog {
+    pub fn outgoing(&mut self, msg: &Message) {
+        Self::log(&mut self.outgoing, "sent", msg);
+    }
+
+    pub fn incoming(&mut self, msg: &Message) {
+        Self::log(&mut self.incoming, "received", msg);
+    }
+
+    fn log(current: &mut Option<String>, verb: &str, msg: &Message) {
+        match msg {
+            Message::Sync(p) if current.as_deref() != Some(&p.session_id) => {
+                tracing::info!(
+                    "{verb} handoff {} {:?}: {}x{} window, {} px across",
+                    p.session_id,
+                    p.direction,
+                    p.window_dim.width,
+                    p.window_dim.height,
+                    p.edge_delta.visible_pixels
+                );
+                *current = Some(p.session_id.clone());
+            }
+            Message::Sync(p) => tracing::debug!(
+                "{verb} {} px across, dragging={}",
+                p.edge_delta.visible_pixels,
+                p.is_dragging
+            ),
+            Message::Release { session_id } => {
+                tracing::info!("{verb} release of handoff {session_id}");
+                *current = None;
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

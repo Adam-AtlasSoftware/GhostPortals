@@ -67,13 +67,19 @@ cargo build --release -p ghostportals-windows
 
 ## Both sides
 
-- `--proxy <text>` matches the local proxy window by a substring of its title
-  (or, on Linux, its app id). Without it, the daemon still reports outgoing
-  windows but does not show incoming ones.
+- `--proxy <text>` names the local **proxy**: the window that stands in for a
+  window arriving from the other machine. It matches a substring of the title
+  (or, on Linux, the app id), so pick something unique. The proxy only
+  *receives*. Dragging it does nothing, and the daemon warns if you try. To
+  test, drag any *other* window over the edge and watch the proxy on the other
+  screen slide in. Without `--proxy`, the daemon still reports outgoing windows
+  but does not show incoming ones.
+- Each handoff logs one `sent handoff …` / `received handoff …` line when it
+  starts and one `release` line when it ends. `RUST_LOG=debug` adds every frame
+  and every proxy move.
 - `--token <secret>` (or `GHOSTPORTALS_TOKEN`) makes the peer prove it knows a
   shared secret. Use it on any network you do not fully trust; traffic is not
   encrypted.
-- `RUST_LOG=debug` shows every proxy move.
 
 ## Development
 

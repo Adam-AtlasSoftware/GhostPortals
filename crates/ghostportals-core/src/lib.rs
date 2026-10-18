@@ -8,6 +8,6 @@ pub mod link;
 pub mod protocol;
 
 pub use geometry::{Rect, ScreenEdge, Side};
-pub use handoff::HandoffTracker;
+pub use handoff::{HandoffLog, HandoffTracker};
 pub use link::{Endpoint, Link, LinkEvent};
 pub use protocol::{Direction, EdgeDelta, Hello, Message, PROTOCOL_VERSION, SyncPacket, WindowDim};

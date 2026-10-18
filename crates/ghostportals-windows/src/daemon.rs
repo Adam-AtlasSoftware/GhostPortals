@@ -5,8 +5,8 @@ use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use ghostportals_core::geometry::{proxy_clip, proxy_placement};
 use ghostportals_core::{
-    Direction, Endpoint, HandoffTracker, Hello, Link, LinkEvent, Message, PROTOCOL_VERSION,
-    ScreenEdge, Side, SyncPacket,
+    Direction, Endpoint, HandoffLog, HandoffTracker, Hello, Link, LinkEvent, Message,
+    PROTOCOL_VERSION, ScreenEdge, Side, SyncPacket,
 };
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -111,6 +111,9 @@ async fn watch() -> Result<()> {
 struct Proxy {
     needle: String,
     window: Option<Window>,
+    /// One warning per drag of the proxy itself, one per missing proxy.
+    warned_drag: bool,
+    warned_missing: bool,
 }
 
 impl Proxy {
@@ -118,6 +121,13 @@ impl Proxy {
         if self.window.is_none_or(|w| w.rect().is_err()) {
             self.window = Window::find_by_title(&self.needle);
         }
+        if self.window.is_none() && !self.warned_missing {
+            warn!(
+                "a window is arriving from Linux, but no window title contains --proxy \"{}\"",
+                self.needle
+            );
+        }
+        self.warned_missing = self.window.is_none();
         self.window
     }
 
@@ -135,7 +145,13 @@ async fn run(endpoint: Endpoint, token: Option<String>, proxy: Option<String>) -
     };
     let mut link = Link::spawn(endpoint, hello, token);
     let mut tracker = HandoffTracker::new(edge());
-    let mut proxy = proxy.map(|needle| Proxy { needle, window: None });
+    let mut proxy = proxy.map(|needle| Proxy {
+        needle,
+        window: None,
+        warned_drag: false,
+        warned_missing: false,
+    });
+    let mut log = HandoffLog::default();
     if proxy.is_none() {
         warn!("no --proxy given: windows arriving from Linux will not be shown");
     }
@@ -146,7 +162,8 @@ async fn run(endpoint: Endpoint, token: Option<String>, proxy: Option<String>) -
         tokio::select! {
             _ = ticker.tick() => {
                 tracker.set_edge(edge());
-                if let Some(msg) = poll(&mut tracker, &mut tracked, proxy.as_ref()) {
+                if let Some(msg) = poll(&mut tracker, &mut tracked, proxy.as_mut()) {
+                    log.outgoing(&msg);
                     link.send(msg);
                 }
             }
@@ -156,11 +173,16 @@ async fn run(endpoint: Endpoint, token: Option<String>, proxy: Option<String>) -
                     info!("handoff link down");
                     park_proxy(proxy.as_mut(), tracker.edge());
                 }
-                Some(LinkEvent::Message(Message::Sync(p))) if p.direction == Direction::LinuxToWindows => {
-                    show_proxy(proxy.as_mut(), tracker.edge(), &p);
+                Some(LinkEvent::Message(msg)) => {
+                    log.incoming(&msg);
+                    match msg {
+                        Message::Sync(p) if p.direction == Direction::LinuxToWindows => {
+                            show_proxy(proxy.as_mut(), tracker.edge(), &p);
+                        }
+                        Message::Release { .. } => park_proxy(proxy.as_mut(), tracker.edge()),
+                        other => warn!("ignoring {other:?}"),
+                    }
                 }
-                Some(LinkEvent::Message(Message::Release { .. })) => park_proxy(proxy.as_mut(), tracker.edge()),
-                Some(LinkEvent::Message(other)) => warn!("ignoring {other:?}"),
                 None => return Ok(()),
             },
             _ = tokio::signal::ctrl_c() => {
@@ -174,7 +196,7 @@ async fn run(endpoint: Endpoint, token: Option<String>, proxy: Option<String>) -
 fn poll(
     tracker: &mut HandoffTracker,
     tracked: &mut Option<Window>,
-    proxy: Option<&Proxy>,
+    proxy: Option<&mut Proxy>,
 ) -> Option<Message> {
     // A window that was crossing and has since closed ends its session.
     if let Some(w) = *tracked
@@ -185,7 +207,18 @@ fn poll(
     }
     let w = Window::foreground()?;
     // The proxy deliberately hangs off the edge; never echo it back.
-    if proxy.is_some_and(|p| p.is(w)) {
+    if let Some(p) = proxy
+        && p.is(w)
+    {
+        let moving = w.in_move_size();
+        if moving && !p.warned_drag {
+            warn!(
+                "\"{}\" is the --proxy window: it only shows windows arriving from Linux and \
+                 never crosses itself. Drag a different window to the right edge.",
+                w.title()
+            );
+        }
+        p.warned_drag = moving;
         return None;
     }
     let rect = w.rect().ok()?;

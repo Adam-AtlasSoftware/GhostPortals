@@ -5,8 +5,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ghostportals_core::geometry::proxy_placement;
 use ghostportals_core::{
-    Direction, Endpoint, HandoffTracker, Hello, Link, LinkEvent, Message, PROTOCOL_VERSION, Rect,
-    ScreenEdge, Side, SyncPacket,
+    Direction, Endpoint, HandoffLog, HandoffTracker, Hello, Link, LinkEvent, Message,
+    PROTOCOL_VERSION, Rect, ScreenEdge, Side, SyncPacket,
 };
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -98,6 +98,10 @@ struct State {
     tracker: HandoffTracker,
     proxy: Option<String>,
     desktop_known: bool,
+    log: HandoffLog,
+    /// One warning per drag of the proxy itself, one per missing proxy.
+    warned_proxy_drag: bool,
+    warned_missing_proxy: bool,
 }
 
 impl State {
@@ -133,6 +137,9 @@ async fn run(
         tracker: HandoffTracker::new(ScreenEdge::from_desktop(Side::Linux, Rect::default())),
         proxy,
         desktop_known: false,
+        log: HandoffLog::default(),
+        warned_proxy_drag: false,
+        warned_missing_proxy: false,
     };
     if state.proxy.is_none() {
         warn!("no --proxy given: windows arriving from Windows will not be shown");
@@ -146,6 +153,7 @@ async fn run(
                     return Ok(());
                 };
                 if let Some(msg) = local_event(&mut state, ev) {
+                    state.log.outgoing(&msg);
                     link.send(msg);
                 }
             }
@@ -155,7 +163,7 @@ async fn run(
                     info!("handoff link down");
                     park_proxy(backend, &state).await;
                 }
-                Some(LinkEvent::Message(msg)) => remote_message(backend, &state, msg).await,
+                Some(LinkEvent::Message(msg)) => remote_message(backend, &mut state, msg).await,
                 None => return Ok(()),
             },
             _ = tokio::signal::ctrl_c() => {
@@ -182,6 +190,14 @@ fn local_event(state: &mut State, ev: BackendEvent) -> Option<Message> {
             // The proxy deliberately hangs off the edge; never echo it back.
             if state.is_proxy(&w) {
                 tracing::debug!("proxy now at {:?}", w.rect);
+                if w.moving && !state.warned_proxy_drag {
+                    warn!(
+                        "\"{}\" is the --proxy window: it only shows windows arriving from \
+                         Windows and never crosses itself. Drag a different window to the left edge.",
+                        w.title
+                    );
+                }
+                state.warned_proxy_drag = w.moving;
             }
             let feed = state.desktop_known && !state.is_proxy(&w) && (w.active || w.moving);
             let msg = feed.then(|| state.tracker.sample(&w.id, w.rect, w.moving)).flatten();
@@ -191,7 +207,8 @@ fn local_event(state: &mut State, ev: BackendEvent) -> Option<Message> {
     }
 }
 
-async fn remote_message(backend: &Backend, state: &State, msg: Message) {
+async fn remote_message(backend: &Backend, state: &mut State, msg: Message) {
+    state.log.incoming(&msg);
     match msg {
         Message::Sync(p) if p.direction == Direction::WindowsToLinux => {
             show_proxy(backend, state, &p).await
@@ -202,8 +219,20 @@ async fn remote_message(backend: &Backend, state: &State, msg: Message) {
     }
 }
 
-async fn show_proxy(backend: &Backend, state: &State, p: &SyncPacket) {
-    let Some(proxy) = state.proxy_window() else { return };
+async fn show_proxy(backend: &Backend, state: &mut State, p: &SyncPacket) {
+    let Some(proxy) = state.proxy_window().cloned() else {
+        if !state.warned_missing_proxy {
+            match &state.proxy {
+                Some(p) => warn!(
+                    "a window is arriving from Windows, but no window matches --proxy \"{p}\""
+                ),
+                None => warn!("a window is arriving from Windows, but no --proxy window was given"),
+            }
+            state.warned_missing_proxy = true;
+        }
+        return;
+    };
+    state.warned_missing_proxy = false;
     if (proxy.rect.width, proxy.rect.height) != (p.window_dim.width, p.window_dim.height) {
         tracing::debug!(
             "proxy is {}x{}, remote window is {}x{}",
