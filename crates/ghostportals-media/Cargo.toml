@@ -1,0 +1,19 @@
+[package]
+name = "ghostportals-media"
+description = "Window capture, H.264 encoding and decoding for Ghost Portals, on GStreamer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ghostportals-core.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+gstreamer = { version = "0.25", features = ["v1_20"] }
+gstreamer-app = "0.25"
+gstreamer-video = "0.25"
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
