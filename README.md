@@ -88,10 +88,10 @@ To type-check the Windows crate from Linux, add the target and run
 `cargo check --target x86_64-pc-windows-gnu -p ghostportals-windows`. No linker
 is needed for that.
 
-Every push to `main` builds `ghostportals-windows.exe` and `ghostportals-linux`
-in CI. They can be downloaded from the run's artifacts
-(`gh run download -n ghostportals-windows`). Pushing a `v*` tag publishes both
-as a GitHub release.
+Prebuilt `ghostportals-windows.exe` and `ghostportals-linux` binaries are on the
+[releases page](https://github.com/Adam-AtlasSoftware/GhostPortals/releases).
+Pushing a `v*` tag builds both binaries and publishes them as a release; tags
+with a suffix (`v0.1.0-alpha.1`) are published as pre-releases.
 
 ## License
 
