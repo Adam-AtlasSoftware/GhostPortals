@@ -68,12 +68,26 @@ pub struct Link {
 
 impl Link {
     /// Starts the background task. `expected_token`, when set, must match the
-    /// token in the peer's hello.
-    pub fn spawn(endpoint: Endpoint, hello: Hello, expected_token: Option<String>) -> Self {
+    /// token in the peer's hello. Fails straight away if a listening endpoint
+    /// cannot be bound (another daemon already has the port, say); dialling
+    /// never fails here, it retries in the background.
+    pub async fn spawn(
+        endpoint: Endpoint,
+        hello: Hello,
+        expected_token: Option<String>,
+    ) -> std::io::Result<Self> {
+        let listener = match &endpoint {
+            Endpoint::Listen(addr) => {
+                let l = TcpListener::bind(addr).await?;
+                info!("listening on {addr}");
+                Some(l)
+            }
+            Endpoint::Connect(_) => None,
+        };
         let (out_tx, out_rx) = mpsc::channel(64);
         let (ev_tx, ev_rx) = mpsc::channel(64);
-        tokio::spawn(run(endpoint, hello, expected_token, out_rx, ev_tx));
-        Self { tx: out_tx, rx: ev_rx }
+        tokio::spawn(run(endpoint, listener, hello, expected_token, out_rx, ev_tx));
+        Ok(Self { tx: out_tx, rx: ev_rx })
     }
 
     /// Queues a message for the peer. Never blocks the caller; when the queue
@@ -93,25 +107,12 @@ type Conn = Framed<TcpStream, LengthDelimitedCodec>;
 
 async fn run(
     endpoint: Endpoint,
+    listener: Option<TcpListener>,
     hello: Hello,
     expected_token: Option<String>,
     mut out_rx: mpsc::Receiver<Message>,
     ev_tx: mpsc::Sender<LinkEvent>,
 ) {
-    let listener = match &endpoint {
-        Endpoint::Listen(addr) => match TcpListener::bind(addr).await {
-            Ok(l) => {
-                info!("listening on {addr}");
-                Some(l)
-            }
-            Err(e) => {
-                warn!("cannot listen on {addr}: {e}");
-                return;
-            }
-        },
-        Endpoint::Connect(_) => None,
-    };
-
     let mut backoff = Duration::from_millis(250);
     loop {
         let stream = match (&endpoint, &listener) {
@@ -277,12 +278,16 @@ mod tests {
     async fn round_trip_and_reconnect() {
         let addr = free_port().await;
         let mut server =
-            Link::spawn(Endpoint::Listen(addr), hello(Side::Linux, None), Some("s3cret".into()));
+            Link::spawn(Endpoint::Listen(addr), hello(Side::Linux, None), Some("s3cret".into()))
+                .await
+                .unwrap();
         let mut client = Link::spawn(
             Endpoint::Connect(addr.to_string()),
             hello(Side::Windows, Some("s3cret")),
             None,
-        );
+        )
+        .await
+        .unwrap();
 
         let LinkEvent::Connected(peer) = expect(&mut server).await else { panic!() };
         assert_eq!(peer.side, Side::Windows);
@@ -306,7 +311,9 @@ mod tests {
             Endpoint::Connect(addr.to_string()),
             hello(Side::Windows, Some("s3cret")),
             None,
-        );
+        )
+        .await
+        .unwrap();
         assert!(matches!(expect(&mut server).await, LinkEvent::Connected(_)));
         assert!(matches!(expect(&mut client).await, LinkEvent::Connected(_)));
     }
@@ -315,12 +322,16 @@ mod tests {
     async fn wrong_token_is_rejected() {
         let addr = free_port().await;
         let mut server =
-            Link::spawn(Endpoint::Listen(addr), hello(Side::Linux, None), Some("right".into()));
+            Link::spawn(Endpoint::Listen(addr), hello(Side::Linux, None), Some("right".into()))
+                .await
+                .unwrap();
         let _client = Link::spawn(
             Endpoint::Connect(addr.to_string()),
             hello(Side::Windows, Some("wrong")),
             None,
-        );
+        )
+        .await
+        .unwrap();
         assert!(timeout(Duration::from_millis(800), server.recv()).await.is_err());
     }
 }

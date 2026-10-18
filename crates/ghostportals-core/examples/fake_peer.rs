@@ -30,7 +30,9 @@ async fn main() {
     match mode {
         "listen" => {
             let mut link =
-                Link::spawn(Endpoint::Listen(addr.parse().expect("socket address")), hello, None);
+                Link::spawn(Endpoint::Listen(addr.parse().expect("socket address")), hello, None)
+                    .await
+                    .expect("listen");
             while let Some(ev) = link.recv().await {
                 match ev {
                     LinkEvent::Message(m) => println!("{}", serde_json::to_string(&m).unwrap()),
@@ -44,7 +46,7 @@ async fn main() {
                 .and_then(|s| s.split_once('x'))
                 .map(|(w, h)| (w.parse().unwrap(), h.parse().unwrap()))
                 .unwrap_or((800, 600));
-            let mut link = Link::spawn(Endpoint::Connect(addr), hello, None);
+            let mut link = Link::spawn(Endpoint::Connect(addr), hello, None).await.expect("link");
             while !matches!(link.recv().await, Some(LinkEvent::Connected(_))) {}
             let steps: Vec<i32> = (0..=w).step_by(20).chain((0..=w).rev().step_by(20)).collect();
             for visible in steps {

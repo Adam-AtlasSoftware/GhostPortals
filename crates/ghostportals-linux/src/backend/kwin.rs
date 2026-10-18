@@ -4,18 +4,20 @@
 //! calls back into the `io.ghostportals.KWinBridge` object served here with
 //! JSON payloads, and long-polls `NextCommand` for placements.
 //!
-//! Each poll returns every queued command at once, keeping only the newest
-//! placement per window, so a fast stream of proxy updates never queues up
-//! behind KWin's round trips.
+//! Commands wait in a [`Queue`] that keeps only the newest placement per
+//! window. Each poll takes everything at once, so a fast stream of proxy
+//! updates never queues up behind KWin's round trips, and the daemon never
+//! blocks on a script that has stopped polling.
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use ghostportals_core::Rect;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Notify, mpsc};
 use tracing::{debug, warn};
 use zbus::{Connection, interface};
 
@@ -50,8 +52,9 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub struct Kwin {
     conn: Connection,
-    commands: mpsc::Sender<Command>,
+    queue: Arc<Queue>,
     script: String,
+    warned_stall: AtomicBool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -61,16 +64,57 @@ enum Command {
     Quit,
 }
 
-/// Drops placements superseded by a later one for the same window.
-fn coalesce(commands: Vec<Command>) -> Vec<Command> {
-    let mut out: Vec<Command> = Vec::with_capacity(commands.len());
-    for cmd in commands {
-        if let Command::Place { id, .. } = &cmd {
-            out.retain(|c| !matches!(c, Command::Place { id: other, .. } if other == id));
+/// How long the script may go without polling before it counts as gone.
+const STALL: Duration = Duration::from_secs(30);
+
+/// Commands waiting for the script.
+struct Queue {
+    pending: Mutex<Vec<Command>>,
+    ready: Notify,
+    last_poll: Mutex<Instant>,
+}
+
+impl Queue {
+    fn new() -> Self {
+        Self {
+            pending: Mutex::new(Vec::new()),
+            ready: Notify::new(),
+            last_poll: Mutex::new(Instant::now()),
         }
-        out.push(cmd);
     }
-    out
+
+    /// Queues `cmd`, replacing any older placement of the same window.
+    fn push(&self, cmd: Command) {
+        let mut pending = self.pending.lock().unwrap();
+        if let Command::Place { id, .. } = &cmd {
+            pending.retain(|c| !matches!(c, Command::Place { id: other, .. } if other == id));
+        }
+        pending.push(cmd);
+        drop(pending);
+        self.ready.notify_one();
+    }
+
+    /// Everything queued, waiting up to `timeout` for something to arrive.
+    async fn take(&self, timeout: Duration) -> Vec<Command> {
+        *self.last_poll.lock().unwrap() = Instant::now();
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let batch = std::mem::take(&mut *self.pending.lock().unwrap());
+            if !batch.is_empty() {
+                return batch;
+            }
+            // notify_one leaves a permit when nobody is waiting, so a push
+            // between the check above and this await is not lost.
+            if tokio::time::timeout_at(deadline, self.ready.notified()).await.is_err() {
+                return batch;
+            }
+        }
+    }
+
+    /// Commands are waiting but the script has not asked for any in a while.
+    fn stalled(&self) -> bool {
+        !self.pending.lock().unwrap().is_empty() && self.last_poll.lock().unwrap().elapsed() > STALL
+    }
 }
 
 #[derive(Deserialize)]
@@ -100,7 +144,7 @@ fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
 
 struct Bridge {
     events: mpsc::Sender<BackendEvent>,
-    commands: Arc<Mutex<mpsc::Receiver<Command>>>,
+    queue: Arc<Queue>,
 }
 
 impl Bridge {
@@ -144,22 +188,18 @@ impl Bridge {
     /// Returns the pending commands as a JSON array, or "" after a while so
     /// the script's call never times out.
     async fn next_command(&self) -> String {
-        let mut rx = self.commands.lock().await;
-        let Ok(Some(first)) = tokio::time::timeout(POLL_TIMEOUT, rx.recv()).await else {
+        let batch = self.queue.take(POLL_TIMEOUT).await;
+        if batch.is_empty() {
             return String::new();
-        };
-        let mut batch = vec![first];
-        while let Ok(cmd) = rx.try_recv() {
-            batch.push(cmd);
         }
-        serde_json::to_string(&coalesce(batch)).unwrap_or_default()
+        serde_json::to_string(&batch).unwrap_or_default()
     }
 }
 
 impl Kwin {
     pub async fn connect(events: mpsc::Sender<BackendEvent>) -> Result<Self> {
-        let (cmd_tx, cmd_rx) = mpsc::channel(64);
-        let bridge = Bridge { events, commands: Arc::new(Mutex::new(cmd_rx)) };
+        let queue = Arc::new(Queue::new());
+        let bridge = Bridge { events, queue: queue.clone() };
         let names = Names::from_env();
         // zbus lets a newer process take over a name by default, which would
         // silently orphan a running daemon and its script. Refuse instead.
@@ -212,30 +252,33 @@ impl Kwin {
             )
             .await?;
         }
-        Ok(Self { conn, commands: cmd_tx, script: names.script })
+        Ok(Self { conn, queue, script: names.script, warned_stall: AtomicBool::new(false) })
     }
 
     pub async fn place_window(&self, id: &str, r: Rect) -> Result<()> {
-        self.command(Command::Place {
+        if self.queue.stalled() && !self.warned_stall.swap(true, Ordering::Relaxed) {
+            warn!(
+                "the KWin script has not collected commands for {}s; was it unloaded? \
+                 Restart the daemon to reload it",
+                STALL.as_secs()
+            );
+        }
+        self.queue.push(Command::Place {
             id: id.to_owned(),
             x: r.x,
             y: r.y,
             width: r.width,
             height: r.height,
-        })
-        .await
+        });
+        Ok(())
     }
 
     pub async fn shutdown(self) -> Result<()> {
         // Stop the script's poll loop first so it does not hammer a vanished
         // bus name between our exit and the unload.
-        let _ = self.command(Command::Quit).await;
+        self.queue.push(Command::Quit);
         tokio::time::sleep(Duration::from_millis(100)).await;
         unload(&self.conn, &self.script).await
-    }
-
-    async fn command(&self, cmd: Command) -> Result<()> {
-        self.commands.send(cmd).await.context("KWin bridge stopped")
     }
 }
 
@@ -272,13 +315,31 @@ mod tests {
         Command::Place { id: id.into(), x, y: 0, width: 10, height: 10 }
     }
 
-    #[test]
-    fn keeps_only_the_latest_placement_per_window() {
-        let batch = coalesce(vec![place("a", 1), place("b", 1), place("a", 2), Command::Quit]);
+    #[tokio::test]
+    async fn keeps_only_the_latest_placement_per_window() {
+        let q = Queue::new();
+        for cmd in [place("a", 1), place("b", 1), place("a", 2), Command::Quit] {
+            q.push(cmd);
+        }
+        let batch = q.take(Duration::from_millis(10)).await;
         assert_eq!(batch, vec![place("b", 1), place("a", 2), Command::Quit]);
         assert_eq!(
             serde_json::to_string(&batch[1]).unwrap(),
             r#"{"op":"place","id":"a","x":2,"y":0,"width":10,"height":10}"#
         );
+    }
+
+    #[tokio::test]
+    async fn take_waits_for_a_push_and_times_out_empty() {
+        let q = Arc::new(Queue::new());
+        assert!(q.take(Duration::from_millis(20)).await.is_empty());
+
+        let pusher = q.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            pusher.push(Command::Quit);
+        });
+        assert_eq!(q.take(Duration::from_secs(5)).await, vec![Command::Quit]);
+        assert!(!q.stalled());
     }
 }

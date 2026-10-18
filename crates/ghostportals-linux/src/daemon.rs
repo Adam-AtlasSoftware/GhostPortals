@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use ghostportals_core::geometry::proxy_placement;
 use ghostportals_core::{
@@ -74,6 +74,8 @@ pub async fn main() -> Result<()> {
 }
 
 async fn watch(mut events: tokio::sync::mpsc::Receiver<BackendEvent>) -> Result<()> {
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
     loop {
         tokio::select! {
             ev = events.recv() => match ev {
@@ -88,7 +90,7 @@ async fn watch(mut events: tokio::sync::mpsc::Receiver<BackendEvent>) -> Result<
                 Some(BackendEvent::Desktop(r)) => println!("desktop {r:?}"),
                 None => return Ok(()),
             },
-            _ = tokio::signal::ctrl_c() => return Ok(()),
+            _ = &mut shutdown => return Ok(()),
         }
     }
 }
@@ -131,7 +133,9 @@ async fn run(
         host: hostname(),
         token: token.clone(),
     };
-    let mut link = Link::spawn(endpoint, hello, token);
+    let mut link = Link::spawn(endpoint, hello, token)
+        .await
+        .context("cannot listen for the peer (is another daemon already running?)")?;
     let mut state = State {
         windows: HashMap::new(),
         tracker: HandoffTracker::new(ScreenEdge::from_desktop(Side::Linux, Rect::default())),
@@ -145,6 +149,8 @@ async fn run(
         warn!("no --proxy given: windows arriving from Windows will not be shown");
     }
 
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
     loop {
         tokio::select! {
             ev = events.recv() => {
@@ -166,7 +172,7 @@ async fn run(
                 Some(LinkEvent::Message(msg)) => remote_message(backend, &mut state, msg).await,
                 None => return Ok(()),
             },
-            _ = tokio::signal::ctrl_c() => {
+            _ = &mut shutdown => {
                 park_proxy(backend, &state).await;
                 return Ok(());
             }
@@ -255,6 +261,23 @@ async fn park_proxy(backend: &Backend, state: &State) {
     if let Err(e) = backend.place_window(&proxy.id, Rect { x, ..proxy.rect }).await {
         warn!("parking proxy: {e}");
     }
+}
+
+/// Resolves on Ctrl+C or SIGTERM (killall, systemd), so either way the
+/// daemon unloads what it installed in the compositor before exiting.
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    match signal(SignalKind::terminate()) {
+        Ok(mut term) => tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        },
+        Err(e) => {
+            warn!("cannot watch for SIGTERM: {e}");
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
+    info!("shutting down");
 }
 
 fn hostname() -> String {

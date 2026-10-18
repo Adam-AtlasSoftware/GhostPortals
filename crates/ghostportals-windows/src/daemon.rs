@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use ghostportals_core::geometry::{Margins, proxy_clip, proxy_placement};
 use ghostportals_core::{
@@ -151,7 +151,9 @@ async fn run(endpoint: Endpoint, token: Option<String>, proxy: Option<String>) -
         host: std::env::var("COMPUTERNAME").unwrap_or_else(|_| "windows".into()),
         token: token.clone(),
     };
-    let mut link = Link::spawn(endpoint, hello, token);
+    let mut link = Link::spawn(endpoint, hello, token)
+        .await
+        .context("cannot listen for the peer (is another daemon already running?)")?;
     let mut tracker = HandoffTracker::new(edge());
     let mut proxy = proxy.map(|needle| Proxy {
         needle,
