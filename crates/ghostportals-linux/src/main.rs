@@ -2,6 +2,8 @@
 mod backend;
 #[cfg(target_os = "linux")]
 mod daemon;
+#[cfg(target_os = "linux")]
+mod proxy;
 
 #[cfg(target_os = "linux")]
 #[tokio::main]

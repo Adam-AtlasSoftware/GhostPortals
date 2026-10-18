@@ -10,11 +10,13 @@
 mod gnome;
 mod hyprland;
 mod kwin;
+mod kwin_cast;
 
 use std::fmt;
 
 use anyhow::{Result, bail};
 use ghostportals_core::Rect;
+use ghostportals_media::Source;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +73,12 @@ impl Kind {
     }
 }
 
+/// A window being captured. Dropping it stops the capture.
+pub struct Capture {
+    pub source: Source,
+    _keep: Box<dyn Send>,
+}
+
 pub enum Backend {
     Kwin(kwin::Kwin),
     Hyprland(hyprland::Hyprland),
@@ -98,6 +106,24 @@ impl Backend {
             Backend::Kwin(b) => b.place_window(id, rect).await,
             Backend::Hyprland(b) => b.place_window(id, rect).await,
             Backend::Gnome(b) => b.place_window(id, rect).await,
+        }
+    }
+
+    /// Starts capturing a window so it can be encoded. Blocks briefly; call
+    /// it from `spawn_blocking`.
+    pub fn capture(&self, id: &str) -> Result<Capture> {
+        match self {
+            Backend::Kwin(_) => {
+                let cast = kwin_cast::stream_window(id)?;
+                Ok(Capture {
+                    source: Source::PipeWire { serial: cast.serial },
+                    _keep: Box::new(cast),
+                })
+            }
+            // Mutter (ScreenCast RecordWindow) and Hyprland (toplevel export)
+            // capture are the next backends to add.
+            Backend::Hyprland(_) => bail!("window streaming is not supported on Hyprland yet"),
+            Backend::Gnome(_) => bail!("window streaming is not supported on GNOME yet"),
         }
     }
 

@@ -200,6 +200,9 @@ impl Kwin {
     pub async fn connect(events: mpsc::Sender<BackendEvent>) -> Result<Self> {
         let queue = Arc::new(Queue::new());
         let bridge = Bridge { events, queue: queue.clone() };
+        if let Err(e) = super::kwin_cast::ensure_grant() {
+            warn!("cannot grant window capture: {e:#}");
+        }
         let names = Names::from_env();
         // zbus lets a newer process take over a name by default, which would
         // silently orphan a running daemon and its script. Refuse instead.
