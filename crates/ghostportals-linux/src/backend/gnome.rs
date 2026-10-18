@@ -22,7 +22,7 @@ use super::{BackendEvent, WindowInfo};
 trait Shell {
     fn list_windows(&self) -> zbus::Result<String>;
     fn desktop_bounds(&self) -> zbus::Result<String>;
-    fn move_window(&self, id: &str, x: i32, y: i32) -> zbus::Result<()>;
+    fn place_window(&self, id: &str, x: i32, y: i32, width: i32, height: i32) -> zbus::Result<()>;
     #[zbus(signal)]
     fn window_changed(&self, payload: String) -> zbus::Result<()>;
     #[zbus(signal)]
@@ -109,7 +109,7 @@ impl Gnome {
         Ok(Self { shell })
     }
 
-    pub async fn move_window(&self, id: &str, x: i32, y: i32) -> Result<()> {
-        Ok(self.shell.move_window(id, x, y).await?)
+    pub async fn place_window(&self, id: &str, r: Rect) -> Result<()> {
+        Ok(self.shell.place_window(id, r.x, r.y, r.width, r.height).await?)
     }
 }

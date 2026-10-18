@@ -90,13 +90,14 @@ impl Backend {
         Ok((backend, rx))
     }
 
-    /// Moves a window's frame to `(x, y)` in global desktop coordinates.
-    /// Compositors may refuse or clamp positions that are mostly off-screen.
-    pub async fn move_window(&self, id: &str, x: i32, y: i32) -> Result<()> {
+    /// Sets a window's frame to `rect` in global desktop coordinates,
+    /// un-maximizing or un-tiling it first. Compositors may refuse or clamp
+    /// positions that are mostly off-screen, and clients may round sizes.
+    pub async fn place_window(&self, id: &str, rect: Rect) -> Result<()> {
         match self {
-            Backend::Kwin(b) => b.move_window(id, x, y).await,
-            Backend::Hyprland(b) => b.move_window(id, x, y).await,
-            Backend::Gnome(b) => b.move_window(id, x, y).await,
+            Backend::Kwin(b) => b.place_window(id, rect).await,
+            Backend::Hyprland(b) => b.place_window(id, rect).await,
+            Backend::Gnome(b) => b.place_window(id, rect).await,
         }
     }
 

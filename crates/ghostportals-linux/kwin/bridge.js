@@ -56,15 +56,22 @@ function find(windowId) {
 }
 
 function apply(cmd) {
-    if (cmd.op === "move") {
+    if (cmd.op === "place") {
         const w = find(cmd.id);
         if (w) {
-            const g = w.frameGeometry;
-            w.frameGeometry = { x: cmd.x, y: cmd.y, width: g.width, height: g.height };
+            // A maximized or tiled window ignores geometry changes.
+            try {
+                if (w.maximizeMode !== 0) {
+                    w.setMaximize(false, false);
+                }
+                if (w.tile) {
+                    w.tile = null;
+                }
+            } catch (e) {
+                print("ghostportals: cannot release " + w.caption + " from maximize/tile: " + e);
+            }
+            w.frameGeometry = { x: cmd.x, y: cmd.y, width: cmd.width, height: cmd.height };
         }
-    } else if (cmd.op === "resync") {
-        reportScreen();
-        workspace.windowList().forEach(report);
     } else if (cmd.op === "quit") {
         running = false;
     }
@@ -77,7 +84,7 @@ function poll() {
     callDBus(SERVICE, PATH, IFACE, "NextCommand", (reply) => {
         if (reply) {
             try {
-                apply(JSON.parse(reply));
+                JSON.parse(reply).forEach(apply);
             } catch (e) {
                 print("ghostportals: bad command " + reply + ": " + e);
             }

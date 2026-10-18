@@ -2,7 +2,9 @@
 
 use anyhow::{Context, Result, bail};
 use ghostportals_core::Rect;
+use ghostportals_core::geometry::Margins;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, HGDIOBJ, SetWindowRgn};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
@@ -10,8 +12,8 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GUI_INMOVESIZE, GUITHREADINFO, GetForegroundWindow, GetGUIThreadInfo,
     GetSystemMetrics, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE,
-    SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+    IsZoomed, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, ShowWindow,
 };
 use windows::core::BOOL;
 
@@ -33,12 +35,37 @@ impl Window {
         (!hwnd.is_invalid()).then_some(Self(hwnd))
     }
 
-    /// Outer window rectangle in virtual-screen coordinates. Includes the
-    /// invisible resize borders Windows 10+ adds around most windows.
+    /// The visible frame in virtual-screen coordinates: what the user sees,
+    /// without the invisible resize borders Windows 10+ adds around most
+    /// windows. Falls back to the outer rectangle without DWM.
     pub fn rect(&self) -> Result<Rect> {
         let mut r = RECT::default();
+        let dwm = unsafe {
+            DwmGetWindowAttribute(
+                self.0,
+                DWMWA_EXTENDED_FRAME_BOUNDS,
+                &mut r as *mut RECT as *mut _,
+                size_of::<RECT>() as u32,
+            )
+        };
+        match dwm {
+            Ok(()) => Ok(rect(r)),
+            Err(_) => self.outer_rect(),
+        }
+    }
+
+    /// The rectangle Windows positions the window by, invisible borders
+    /// included.
+    pub fn outer_rect(&self) -> Result<Rect> {
+        let mut r = RECT::default();
         unsafe { GetWindowRect(self.0, &mut r) }.context("GetWindowRect")?;
-        Ok(Rect::new(r.left, r.top, r.right - r.left, r.bottom - r.top))
+        Ok(rect(r))
+    }
+
+    /// The invisible borders around the visible frame. Only meaningful while
+    /// the window is unclipped: a window region changes how DWM frames it.
+    pub fn margins(&self) -> Result<Margins> {
+        Ok(Margins::between(self.outer_rect()?, self.rect()?))
     }
 
     pub fn title(&self) -> String {
@@ -57,19 +84,37 @@ impl Window {
             && info.hwndMoveSize == self.0
     }
 
-    pub fn move_to(&self, x: i32, y: i32) -> Result<()> {
+    /// Puts the visible frame exactly on `visible`, restoring the window
+    /// first if it is maximized.
+    pub fn place(&self, visible: Rect, margins: Margins) -> Result<()> {
+        let outer = margins.outset(visible);
         unsafe {
-            SetWindowPos(self.0, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+            if IsZoomed(self.0).as_bool() {
+                let _ = ShowWindow(self.0, SW_RESTORE);
+            }
+            SetWindowPos(
+                self.0,
+                None,
+                outer.x,
+                outer.y,
+                outer.width,
+                outer.height,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            )
         }
         .context("SetWindowPos")
     }
 
-    /// Restricts drawing to `clip` (in window coordinates), or removes the
-    /// restriction with `None`. Used so a proxy hanging over the right edge of
-    /// the Windows desktop never spills onto a monitor placed beyond it.
-    pub fn clip(&self, clip: Option<Rect>) -> Result<()> {
+    /// Restricts drawing to `clip` (relative to the visible frame), or removes
+    /// the restriction with `None`. Used so a proxy hanging over the right
+    /// edge of the Windows desktop never spills onto a monitor beyond it.
+    pub fn clip(&self, clip: Option<Rect>, margins: Margins) -> Result<()> {
         unsafe {
-            let region = clip.map(|c| CreateRectRgn(c.x, c.y, c.right(), c.y + c.height));
+            // Regions are relative to the outer rectangle.
+            let region = clip.map(|c| {
+                let c = c.translate(margins.left, margins.top);
+                CreateRectRgn(c.x, c.y, c.right(), c.y + c.height)
+            });
             if region.is_some_and(|r| r.is_invalid()) {
                 bail!("CreateRectRgn failed");
             }
@@ -104,6 +149,10 @@ impl Window {
         let _ = unsafe { EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize)) };
         search.found
     }
+}
+
+fn rect(r: RECT) -> Rect {
+    Rect::new(r.left, r.top, r.right - r.left, r.bottom - r.top)
 }
 
 /// Bounds of the whole virtual desktop (all monitors).

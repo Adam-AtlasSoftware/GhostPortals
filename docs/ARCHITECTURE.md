@@ -13,8 +13,21 @@ desktop coordinates to and from this canvas:
 - Linux: the bezel is the left edge of the compositor's desktop (the union of
   all outputs, in logical pixels).
 
+The proxy is given the source window's exact size, so geometry matches
+pixel for pixel. Both sides measure the **visible frame**, decorations
+included:
+
+- KWin `frameGeometry`, Hyprland `at`/`size`, and Mutter `get_frame_rect()`
+  already give the visible frame.
+- On Windows, `GetWindowRect` includes the invisible resize borders (about
+  7 px left, right and bottom on Windows 10/11), so the daemon reads
+  `DWMWA_EXTENDED_FRAME_BOUNDS` instead. When placing the proxy, it adds the
+  proxy's own invisible borders (`Margins`, measured once before the proxy is
+  ever clipped) back on, and offsets the clip region by them.
+
 Mixed DPI between the two machines is not handled yet: a 1280 px window on one
-side is placed as a 1280 px proxy on the other.
+side becomes a 1280 px proxy on the other, whatever the physical size of the
+pixels.
 
 ## Handoff
 
@@ -82,9 +95,13 @@ provides, behind one `Backend` enum (`crates/ghostportals-linux/src/backend`):
 
 | Compositor | Channel | Geometry | Drag detection | Move |
 |---|---|---|---|---|
-| KWin (Plasma 6) | KWin script loaded over DBus. It calls the daemon's `io.ghostportals.KWinBridge` and long-polls `NextCommand` for moves | `frameGeometryChanged` signal | `interactiveMoveResizeStarted/Finished` | sets `frameGeometry` |
-| Hyprland | `.socket.sock` requests and `.socket2.sock` events | `j/clients`; `j/activewindow` polled every 16 ms (IPC sends nothing during a drag) | position changed within the last 150 ms | `setfloating` + `movewindowpixel exact` |
-| GNOME Shell (Mutter) | the bundled extension, serving `io.ghostportals.Shell` | `position-changed` / `size-changed` signals | `grab-op-begin/end` | `Meta.Window.move_frame` |
+| KWin (Plasma 6) | KWin script loaded over DBus. It calls the daemon's `io.ghostportals.KWinBridge` and long-polls `NextCommand`, which returns every queued command and keeps only the newest placement per window | `frameGeometryChanged` signal | `interactiveMoveResizeStarted/Finished` | un-maximize and un-tile, then set `frameGeometry` |
+| Hyprland | `.socket.sock` requests and `.socket2.sock` events | `j/clients`; `j/activewindow` polled every 16 ms (IPC sends nothing during a drag) | position changed within the last 150 ms | `setfloating` + `resizewindowpixel exact` + `movewindowpixel exact` |
+| GNOME Shell (Mutter) | the bundled extension, serving `io.ghostportals.Shell` | `position-changed` / `size-changed` signals | `grab-op-begin/end` | un-maximize, then `Meta.Window.move_resize_frame` |
+
+The KWin backend claims its bus name without letting other processes replace
+it, so a second daemon fails to start instead of orphaning the first one's
+script. `GHOSTPORTALS_INSTANCE` gives a development build separate names.
 
 The payloads across these bridges are JSON strings, so new fields need no
 changes to DBus signatures. This also sidesteps KWin's JavaScript numbers

@@ -98,11 +98,14 @@ impl Hyprland {
         Ok(this)
     }
 
-    pub async fn move_window(&self, id: &str, x: i32, y: i32) -> Result<()> {
+    pub async fn place_window(&self, id: &str, r: Rect) -> Result<()> {
         // Only floating windows can be placed freely.
         let reply = self
             .request(&format!(
-                "[[BATCH]]dispatch setfloating address:{id};dispatch movewindowpixel exact {x} {y},address:{id}"
+                "[[BATCH]]dispatch setfloating address:{id};\
+                 dispatch resizewindowpixel exact {} {},address:{id};\
+                 dispatch movewindowpixel exact {} {},address:{id}",
+                r.width, r.height, r.x, r.y
             ))
             .await?;
         // A batch answers "ok" per command, with or without separators.

@@ -3,10 +3,10 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use ghostportals_core::geometry::{proxy_clip, proxy_placement};
+use ghostportals_core::geometry::{Margins, proxy_clip, proxy_placement};
 use ghostportals_core::{
     Direction, Endpoint, HandoffLog, HandoffTracker, Hello, Link, LinkEvent, Message,
-    PROTOCOL_VERSION, ScreenEdge, Side, SyncPacket,
+    PROTOCOL_VERSION, Rect, ScreenEdge, Side, SyncPacket,
 };
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -111,6 +111,8 @@ async fn watch() -> Result<()> {
 struct Proxy {
     needle: String,
     window: Option<Window>,
+    /// Measured when the proxy is found, before it is ever clipped.
+    margins: Margins,
     /// One warning per drag of the proxy itself, one per missing proxy.
     warned_drag: bool,
     warned_missing: bool,
@@ -120,6 +122,12 @@ impl Proxy {
     fn get(&mut self) -> Option<Window> {
         if self.window.is_none_or(|w| w.rect().is_err()) {
             self.window = Window::find_by_title(&self.needle);
+            if let Some(w) = self.window {
+                // Start from a clean slate in case a previous run left a region.
+                let _ = w.clip(None, Margins::default());
+                self.margins = w.margins().unwrap_or_default();
+                info!("proxy is \"{}\" (invisible borders {:?})", w.title(), self.margins);
+            }
         }
         if self.window.is_none() && !self.warned_missing {
             warn!(
@@ -148,6 +156,7 @@ async fn run(endpoint: Endpoint, token: Option<String>, proxy: Option<String>) -
     let mut proxy = proxy.map(|needle| Proxy {
         needle,
         window: None,
+        margins: Margins::default(),
         warned_drag: false,
         warned_missing: false,
     });
@@ -230,11 +239,13 @@ fn poll(
 }
 
 fn show_proxy(proxy: Option<&mut Proxy>, edge: ScreenEdge, p: &SyncPacket) {
-    let Some(w) = proxy.and_then(Proxy::get) else { return };
+    let Some(proxy) = proxy else { return };
+    let Some(w) = proxy.get() else { return };
+    let m = proxy.margins;
     let target = edge.to_local(proxy_placement(p.direction, p.window_dim, p.edge_delta));
     let result = w
-        .move_to(target.x, target.y)
-        .and_then(|()| w.clip(Some(proxy_clip(p.direction, p.window_dim, p.edge_delta))));
+        .place(target, m)
+        .and_then(|()| w.clip(Some(proxy_clip(p.direction, p.window_dim, p.edge_delta)), m));
     if let Err(e) = result {
         warn!("updating proxy: {e:#}");
     }
@@ -242,8 +253,13 @@ fn show_proxy(proxy: Option<&mut Proxy>, edge: ScreenEdge, p: &SyncPacket) {
 
 /// Slides the proxy back past the right edge of the desktop and unclips it.
 fn park_proxy(proxy: Option<&mut Proxy>, edge: ScreenEdge) {
-    let Some(w) = proxy.and_then(Proxy::get) else { return };
-    let result = w.rect().and_then(|r| w.move_to(edge.bezel_x, r.y)).and_then(|()| w.clip(None));
+    let Some(proxy) = proxy else { return };
+    let Some(w) = proxy.get() else { return };
+    let m = proxy.margins;
+    let result = w
+        .rect()
+        .and_then(|r| w.place(Rect { x: edge.bezel_x, ..r }, m))
+        .and_then(|()| w.clip(None, m));
     if let Err(e) = result {
         warn!("parking proxy: {e:#}");
     }

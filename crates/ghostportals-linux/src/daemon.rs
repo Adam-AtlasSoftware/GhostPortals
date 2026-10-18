@@ -243,8 +243,8 @@ async fn show_proxy(backend: &Backend, state: &mut State, p: &SyncPacket) {
         );
     }
     let target = state.edge().to_local(proxy_placement(p.direction, p.window_dim, p.edge_delta));
-    if let Err(e) = backend.move_window(&proxy.id, target.x, target.y).await {
-        warn!("moving proxy: {e}");
+    if let Err(e) = backend.place_window(&proxy.id, target).await {
+        warn!("placing proxy: {e}");
     }
 }
 
@@ -252,7 +252,7 @@ async fn show_proxy(backend: &Backend, state: &mut State, p: &SyncPacket) {
 async fn park_proxy(backend: &Backend, state: &State) {
     let Some(proxy) = state.proxy_window() else { return };
     let x = state.edge().bezel_x - proxy.rect.width;
-    if let Err(e) = backend.move_window(&proxy.id, x, proxy.rect.y).await {
+    if let Err(e) = backend.place_window(&proxy.id, Rect { x, ..proxy.rect }).await {
         warn!("parking proxy: {e}");
     }
 }

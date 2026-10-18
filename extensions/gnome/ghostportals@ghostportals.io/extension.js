@@ -16,10 +16,12 @@ const IFACE_XML = `
   <interface name="io.ghostportals.Shell">
     <method name="ListWindows"><arg type="s" direction="out"/></method>
     <method name="DesktopBounds"><arg type="s" direction="out"/></method>
-    <method name="MoveWindow">
+    <method name="PlaceWindow">
       <arg type="s" name="id" direction="in"/>
       <arg type="i" name="x" direction="in"/>
       <arg type="i" name="y" direction="in"/>
+      <arg type="i" name="width" direction="in"/>
+      <arg type="i" name="height" direction="in"/>
     </method>
     <signal name="WindowChanged"><arg type="s"/></signal>
     <signal name="WindowRemoved"><arg type="s"/></signal>
@@ -91,10 +93,19 @@ export default class GhostPortalsExtension extends Extension {
         return JSON.stringify({x: 0, y: 0, width, height});
     }
 
-    MoveWindow(id, x, y) {
+    PlaceWindow(id, x, y, width, height) {
         const w = this._windows().find(w => this._id(w) === id);
-        if (w)
-            w.move_frame(true, x, y);
+        if (!w)
+            return;
+        // Mutter 49 replaced get_maximized() and dropped unmaximize()'s flags.
+        const maximized = w.is_maximized ? w.is_maximized() : w.get_maximized() !== 0;
+        if (maximized) {
+            if (w.is_maximized)
+                w.unmaximize();
+            else
+                w.unmaximize(Meta.MaximizeFlags.BOTH);
+        }
+        w.move_resize_frame(true, x, y, width, height);
     }
 
     // --- internals ---

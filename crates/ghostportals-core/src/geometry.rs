@@ -38,6 +38,38 @@ impl Rect {
     }
 }
 
+/// Space between a window's visible frame and the rectangle the OS positions
+/// it by, such as the invisible resize borders on Windows 10 and later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Margins {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+impl Margins {
+    /// The margins of `visible` inside `outer`.
+    pub const fn between(outer: Rect, visible: Rect) -> Self {
+        Self {
+            left: visible.x - outer.x,
+            top: visible.y - outer.y,
+            right: outer.right() - visible.right(),
+            bottom: (outer.y + outer.height) - (visible.y + visible.height),
+        }
+    }
+
+    /// The outer rectangle that makes the visible frame land on `visible`.
+    pub const fn outset(&self, visible: Rect) -> Rect {
+        Rect::new(
+            visible.x - self.left,
+            visible.y - self.top,
+            visible.width + self.left + self.right,
+            visible.height + self.top + self.bottom,
+        )
+    }
+}
+
 /// Where the bezel and the top of the screen are in one side's local desktop
 /// coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +152,16 @@ mod tests {
 
     const WIN_DESKTOP: Rect = Rect::new(0, 0, 2560, 1440);
     const LIN_DESKTOP: Rect = Rect::new(0, 0, 3840, 2160);
+
+    #[test]
+    fn margins_round_trip() {
+        // A Windows 11 window: 7 px invisible borders left, right and bottom.
+        let outer = Rect::new(93, 50, 814, 607);
+        let visible = Rect::new(100, 50, 800, 600);
+        let m = Margins::between(outer, visible);
+        assert_eq!(m, Margins { left: 7, top: 0, right: 7, bottom: 7 });
+        assert_eq!(m.outset(visible), outer);
+    }
 
     #[test]
     fn canvas_round_trip() {

@@ -90,6 +90,10 @@ cargo run -p ghostportals-core --example fake_peer -- listen 0.0.0.0:47800
 cargo run -p ghostportals-core --example fake_peer -- sweep 127.0.0.1:47800 800x600
 ```
 
+To run a development build next to a daemon that is already running, give it
+its own DBus and KWin script names with `GHOSTPORTALS_INSTANCE=dev`. Without
+that, the second daemon refuses to start instead of taking over.
+
 To type-check the Windows crate from Linux, add the target and run
 `cargo check --target x86_64-pc-windows-gnu -p ghostportals-windows`. No linker
 is needed for that.
