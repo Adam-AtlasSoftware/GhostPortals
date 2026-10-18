@@ -11,6 +11,9 @@ mod gnome;
 mod hyprland;
 mod kwin;
 mod kwin_cast;
+mod kwin_input;
+
+pub use kwin_input::{Event as Inject, Injector};
 
 use std::fmt;
 
@@ -124,6 +127,32 @@ impl Backend {
             // capture are the next backends to add.
             Backend::Hyprland(_) => bail!("window streaming is not supported on Hyprland yet"),
             Backend::Gnome(_) => bail!("window streaming is not supported on GNOME yet"),
+        }
+    }
+
+    /// Opens a channel for replaying input on this desktop.
+    pub fn injector(&self) -> Result<Injector> {
+        match self {
+            Backend::Kwin(_) => Injector::connect(),
+            Backend::Hyprland(_) => bail!("input forwarding is not supported on Hyprland yet"),
+            Backend::Gnome(_) => bail!("input forwarding is not supported on GNOME yet"),
+        }
+    }
+
+    /// Whether another program may be capturing all input (see
+    /// `Kwin::input_capture_present`).
+    pub async fn input_capture_present(&self) -> bool {
+        match self {
+            Backend::Kwin(b) => b.input_capture_present().await,
+            Backend::Hyprland(_) | Backend::Gnome(_) => false,
+        }
+    }
+
+    /// Gives a window keyboard focus and raises it.
+    pub async fn activate_window(&self, id: &str) -> Result<()> {
+        match self {
+            Backend::Kwin(b) => b.activate_window(id).await,
+            Backend::Hyprland(_) | Backend::Gnome(_) => Ok(()),
         }
     }
 

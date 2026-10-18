@@ -72,6 +72,11 @@ function apply(cmd) {
             }
             w.frameGeometry = { x: cmd.x, y: cmd.y, width: cmd.width, height: cmd.height };
         }
+    } else if (cmd.op === "activate") {
+        const w = find(cmd.id);
+        if (w) {
+            workspace.activeWindow = w;
+        }
     } else if (cmd.op === "quit") {
         running = false;
     }

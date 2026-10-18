@@ -17,7 +17,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use tracing::{debug, info};
 use wayland_client::{Connection, Dispatch, QueueHandle, protocol::wl_registry};
 
-#[allow(dead_code, non_camel_case_types, non_upper_case_globals, clippy::all)]
+#[allow(dead_code, non_camel_case_types, non_upper_case_globals, unused_imports, clippy::all)]
 mod proto {
     use wayland_client;
     use wayland_client::protocol::*;

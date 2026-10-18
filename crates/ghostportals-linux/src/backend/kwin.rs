@@ -61,6 +61,7 @@ pub struct Kwin {
 #[serde(tag = "op", rename_all = "snake_case")]
 enum Command {
     Place { id: String, x: i32, y: i32, width: i32, height: i32 },
+    Activate { id: String },
     Quit,
 }
 
@@ -273,6 +274,33 @@ impl Kwin {
             width: r.width,
             height: r.height,
         });
+        Ok(())
+    }
+
+    /// Whether a KWin input capture (Synergy, Input Leap, Deskflow…) might
+    /// be active. While one is, KWin hands every pointer and key event to it,
+    /// injected ones included, so injecting would type on the other
+    /// computer instead. Capture sessions only report changes, so any
+    /// session at all counts as possibly active.
+    pub async fn input_capture_present(&self) -> bool {
+        let reply = self
+            .conn
+            .call_method(
+                Some("org.kde.KWin"),
+                "/org/kde/KWin/EIS/InputCapture",
+                Some("org.freedesktop.DBus.Introspectable"),
+                "Introspect",
+                &(),
+            )
+            .await;
+        match reply.ok().and_then(|r| r.body().deserialize::<String>().ok()) {
+            Some(xml) => xml.contains("<node name="),
+            None => false,
+        }
+    }
+
+    pub async fn activate_window(&self, id: &str) -> Result<()> {
+        self.queue.push(Command::Activate { id: id.to_owned() });
         Ok(())
     }
 
