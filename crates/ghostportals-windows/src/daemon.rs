@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+use crate::inject::Injector;
 use crate::proxy::Proxy;
 use crate::win32::{self, Window};
 
@@ -41,6 +42,9 @@ enum Command {
         /// Shared secret both daemons must agree on.
         #[arg(long, env = "GHOSTPORTALS_TOKEN")]
         token: Option<String>,
+        /// Ignore clicks and keys sent from the other computer's proxies.
+        #[arg(long)]
+        no_remote_control: bool,
     },
     /// Check that this machine can encode and decode window streams.
     Selftest,
@@ -59,13 +63,13 @@ pub async fn main() -> Result<()> {
             println!("{}", ghostportals_media::selftest(3)?);
             Ok(())
         }
-        Command::Run { connect, listen, token } => {
+        Command::Run { connect, listen, token, no_remote_control } => {
             let endpoint = match (connect, listen) {
                 (Some(addr), _) => Endpoint::Connect(addr),
                 (None, Some(addr)) => Endpoint::Listen(addr),
                 (None, None) => bail!("pass --connect or --listen"),
             };
-            run(endpoint, token).await
+            run(endpoint, token, !no_remote_control).await
         }
     }
 }
@@ -150,9 +154,11 @@ struct State {
     proxy_dragging: bool,
     next_stream: u32,
     internal: mpsc::UnboundedSender<Internal>,
+    remote_control: bool,
+    injector: Injector,
 }
 
-async fn run(endpoint: Endpoint, token: Option<String>) -> Result<()> {
+async fn run(endpoint: Endpoint, token: Option<String>, remote_control: bool) -> Result<()> {
     ghostportals_media::init()?;
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
@@ -163,7 +169,8 @@ async fn run(endpoint: Endpoint, token: Option<String>) -> Result<()> {
     let mut link = Link::spawn(endpoint, hello, token)
         .await
         .context("cannot listen for the peer (is another daemon already running?)")?;
-    let proxy = Proxy::spawn()
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel();
+    let proxy = Proxy::spawn(input_tx)
         .map_err(|e| warn!("no proxy window, windows from Linux will not be shown: {e:#}"))
         .ok();
     let (internal_tx, mut internal_rx) = mpsc::unbounded_channel();
@@ -179,6 +186,8 @@ async fn run(endpoint: Endpoint, token: Option<String>) -> Result<()> {
         proxy_dragging: false,
         next_stream: 1,
         internal: internal_tx,
+        remote_control,
+        injector: Injector::default(),
     };
     let mut ticker = tokio::time::interval(POLL);
 
@@ -209,6 +218,11 @@ async fn run(endpoint: Endpoint, token: Option<String>) -> Result<()> {
                 Some(LinkEvent::Video(frame)) => remote_video(&mut state, frame),
                 None => return Ok(()),
             },
+            Some(event) = input_rx.recv() => {
+                if let Some(session_id) = state.remote_session.clone() {
+                    link.send(Message::Input { session_id, event });
+                }
+            }
             Some(report) = internal_rx.recv() => match report {
                 Internal::EncoderFailed(stream) => {
                     if state.outgoing.as_ref().is_some_and(|o| o.info.stream == stream) {
@@ -361,6 +375,13 @@ fn remote_message(link: &Link, state: &mut State, msg: Message) {
         Message::KeyframeRequest { stream } => {
             if let Some(out) = state.outgoing.as_ref().filter(|o| o.info.stream == stream) {
                 out.encoder.force_keyframe();
+            }
+        }
+        Message::Input { session_id, event } => {
+            if let Some(out) = state.outgoing.as_ref().filter(|o| o.session_id == session_id)
+                && state.remote_control
+            {
+                state.injector.replay(out.window, event);
             }
         }
         Message::ProxyMoved { session_id, x, y } => {

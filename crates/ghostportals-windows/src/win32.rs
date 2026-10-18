@@ -29,6 +29,10 @@ impl Window {
         Self(HWND(hwnd as _))
     }
 
+    pub fn hwnd(&self) -> HWND {
+        self.0
+    }
+
     pub fn raw(&self) -> u64 {
         self.0.0 as usize as u64
     }
