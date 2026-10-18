@@ -3,19 +3,18 @@
 use anyhow::{Context, Result, bail};
 use ghostportals_core::Rect;
 use ghostportals_core::geometry::Margins;
-use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, HGDIOBJ, SetWindowRgn};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GUI_INMOVESIZE, GUITHREADINFO, GetForegroundWindow, GetGUIThreadInfo,
-    GetSystemMetrics, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
-    IsZoomed, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, ShowWindow,
+    GUI_INMOVESIZE, GUITHREADINFO, GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics,
+    GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsZoomed, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE, SWP_NOACTIVATE,
+    SWP_NOZORDER, SetWindowPos, ShowWindow,
 };
-use windows::core::BOOL;
 
 /// A top-level window handle. Plain data: the window may be gone by the time
 /// it is used, and every call below reports that as an error.
@@ -26,6 +25,14 @@ pub struct Window(HWND);
 unsafe impl Send for Window {}
 
 impl Window {
+    pub fn from_raw(hwnd: isize) -> Self {
+        Self(HWND(hwnd as _))
+    }
+
+    pub fn raw(&self) -> u64 {
+        self.0.0 as usize as u64
+    }
+
     pub fn id(&self) -> String {
         format!("{:#x}", self.0.0 as usize)
     }
@@ -127,27 +134,6 @@ impl Window {
             }
         }
         Ok(())
-    }
-
-    /// The first visible top-level window whose title contains `needle`.
-    pub fn find_by_title(needle: &str) -> Option<Self> {
-        struct Search<'a> {
-            needle: &'a str,
-            found: Option<Window>,
-        }
-        unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
-            let search = unsafe { &mut *(lparam.0 as *mut Search) };
-            let w = Window(hwnd);
-            if unsafe { IsWindowVisible(hwnd) }.as_bool() && w.title().contains(search.needle) {
-                search.found = Some(w);
-                return false.into();
-            }
-            true.into()
-        }
-        let mut search = Search { needle, found: None };
-        // EnumWindows reports "failure" when the callback stops it early.
-        let _ = unsafe { EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize)) };
-        search.found
     }
 }
 

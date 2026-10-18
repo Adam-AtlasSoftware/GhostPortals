@@ -1,6 +1,8 @@
 #[cfg(windows)]
 mod daemon;
 #[cfg(windows)]
+mod proxy;
+#[cfg(windows)]
 mod win32;
 
 #[cfg(windows)]

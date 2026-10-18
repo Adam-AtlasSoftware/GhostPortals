@@ -7,11 +7,21 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  GST_VERSION: "1.28.8"
+
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Install GStreamer and GTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgtk-4-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly gstreamer1.0-libav
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -19,6 +29,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Media self-test
+        run: cargo run -p ghostportals-media --example selftest
       - run: cargo build --release -p ghostportals-linux
       - uses: actions/upload-artifact@v4
         with:
@@ -29,17 +41,46 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install GStreamer
+        shell: pwsh
+        run: |
+          $u = "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GST_VERSION/msvc/gstreamer-1.0-msvc-x86_64-$env:GST_VERSION.exe"
+          Invoke-WebRequest $u -OutFile gst.exe
+          Start-Process gst.exe -Wait -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/ALLUSERS','/TYPE=full','/DIR=C:\gst'
+          choco install pkgconfiglite -y --no-progress
+          "C:\gst\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "PKG_CONFIG_PATH=C:\gst\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -p ghostportals-windows -- -D warnings
+      - run: cargo clippy -p ghostportals-windows -p ghostportals-media -- -D warnings
       - run: cargo test -p ghostportals-core
       - run: cargo build --release -p ghostportals-windows
+      - name: Package with GStreamer
+        shell: pwsh
+        run: |
+          $out = "dist\ghostportals-windows"
+          New-Item -ItemType Directory -Force "$out\gstreamer\plugins" | Out-Null
+          Copy-Item target\release\ghostportals-windows.exe $out
+          Copy-Item C:\gst\bin\*.dll $out
+          Copy-Item C:\gst\libexec\gstreamer-1.0\gst-plugin-scanner.exe "$out\gstreamer" -ErrorAction SilentlyContinue
+          $plugins = 'coreelements','app','videoconvertscale','videotestsrc','videoparsersbad',
+                     'd3d11','nvcodec','qsv','amfcodec','mediafoundation','openh264','x264','libav'
+          foreach ($p in $plugins) { Copy-Item "C:\gst\lib\gstreamer-1.0\gst$p.dll" "$out\gstreamer\plugins" }
+          Copy-Item LICENSE, packaging\windows\README.txt $out
+          Compress-Archive -Path $out -DestinationPath dist\ghostportals-windows.zip
+          "{0:N1} MB" -f ((Get-Item dist\ghostportals-windows.zip).Length / 1MB)
+      - name: Self-test the package
+        shell: pwsh
+        run: |
+          # Run from the package with the system install hidden, as a user would.
+          $env:PATH = "C:\Windows\System32;C:\Windows"
+          dist\ghostportals-windows\ghostportals-windows.exe selftest
       - uses: actions/upload-artifact@v4
         with:
           name: ghostportals-windows
-          path: target/release/ghostportals-windows.exe
+          path: dist/ghostportals-windows.zip
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -54,6 +95,6 @@ jobs:
           flags=""
           case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes $flags \
-            ghostportals-linux/ghostportals-linux ghostportals-windows/ghostportals-windows.exe
+            ghostportals-linux/ghostportals-linux ghostportals-windows/ghostportals-windows.zip
         env:
           GH_TOKEN: ${{ github.token }}
