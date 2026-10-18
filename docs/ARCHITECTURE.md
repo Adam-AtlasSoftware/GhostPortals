@@ -107,6 +107,45 @@ Windows. Both get decoded frames as RGBA/BGRA and draw them themselves, which
 keeps hit-testing in our hands for the drag strip and, next, input
 forwarding.
 
+## Input
+
+The proxy reports pointer motion, buttons, wheel and keys as `Input`
+messages in the real window's own coordinates (the proxy is the same size, so
+proxy coordinates are window coordinates). Keys travel as Linux evdev codes;
+Windows' set-1 scan codes match them except for the `E0`-prefixed keys,
+mapped in core `keys.rs`. The source applies its own keyboard layout.
+
+The proxy's top 32 px drag the proxy only once the pointer has moved 4 px
+with the button held; a press and release without that is forwarded as a
+click, so caption buttons still work.
+
+**Windows replays** mouse input by posting `WM_MOUSEMOVE`/`WM_*BUTTON*`/
+`WM_MOUSEWHEEL` to the deepest child window under the point
+(`ChildWindowFromPointEx`). That works while the window hangs off the screen,
+where the cursor cannot go, and never moves the cursor. Caption buttons are
+recognised with `WM_NCHITTEST` and turned into `WM_SYSCOMMAND`. Keys go
+through `SendInput` as scan codes after the window is brought to the
+foreground (borrowing the foreground thread's input state with
+`AttachThreadInput`), because posted key messages do not update the keyboard
+state apps read for modifiers.
+
+**KWin replays** through `org_kde_kwin_fake_input`, which drives the seat's
+real pointer and keyboard. The pointer cannot leave the screens, so the
+window is first moved fully on screen and focused, and goes back one second
+after the pointer leaves the proxy ("control"). Input waits until KWin
+reports the window at its new place with focus; injected any earlier, a click
+lands on whatever was there before and the keys follow it.
+
+KWin cannot replay input while another program holds its input capture.
+`EisInputCaptureFilter` hands every pointer and key event to the capture
+client, injected ones included. Synergy, Input Leap and Deskflow hold that
+capture whenever the cursor is on the other computer, which is exactly when
+the user is using a Linux window's proxy over there; replayed input would go
+straight back to the other computer. So the daemon refuses while any capture
+session exists and logs why. Making this direction work needs a way past the
+seat: XTest for X11 (XWayland) apps, or a different input-sharing
+arrangement.
+
 ## Wire protocol
 
 TCP with `TCP_NODELAY`. Each frame is a 4-byte big-endian length, a tag byte,

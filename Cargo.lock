@@ -1322,7 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "ghostportals-core"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "futures",
  "serde",
@@ -1335,7 +1335,7 @@ dependencies = [
 
 [[package]]
 name = "ghostportals-gui"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1354,7 +1354,7 @@ dependencies = [
 
 [[package]]
 name = "ghostportals-linux"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1376,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "ghostportals-media"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "anyhow",
  "ghostportals-core",
@@ -1391,7 +1391,7 @@ dependencies = [
 
 [[package]]
 name = "ghostportals-windows"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "anyhow",
  "clap",

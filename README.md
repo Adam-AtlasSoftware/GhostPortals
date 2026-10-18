@@ -22,10 +22,17 @@ by its top strip (where the streamed title bar is) drags the real window along.
                  visible_pixels
 ```
 
-**Status:** alpha. One window at a time in each direction. The proxy shows the
-live window but does not pass clicks or keys on to it yet; that is the next
-stage. Streaming *from* Linux works on KDE Plasma 6; GNOME and Hyprland can
-receive windows from Windows but cannot send theirs yet.
+Clicks, scrolling and keys on a proxy are replayed on the real window, so a
+window carried across is usable where it lands. A click in the proxy's top
+strip that does not drag still reaches the window, so its title bar buttons
+work.
+
+**Status:** alpha. One window at a time in each direction. Streaming *from*
+Linux works on KDE Plasma 6; GNOME and Hyprland can receive windows from
+Windows but cannot send theirs yet. Using a **Linux** window from its proxy on
+Windows does not work while Linux is the Synergy (or Input Leap, Deskflow)
+server: see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#input). Using a
+Windows window from its proxy on Linux works either way.
 
 ## Layout
 
@@ -109,6 +116,8 @@ closes.
 - Each handoff logs one `sent handoff …` / `received handoff …` line when it
   starts and one `release` line when it ends, plus which encoder or decoder it
   uses. `RUST_LOG=debug` adds every frame and every proxy move.
+- `--no-remote-control` (or the app's "Let the other computer click and type
+  in my windows") ignores input sent from the other computer's proxies.
 - `--token <secret>` (or `GHOSTPORTALS_TOKEN`) makes the peer prove it knows a
   shared secret. Use it on any network you do not fully trust; traffic is not
   encrypted.

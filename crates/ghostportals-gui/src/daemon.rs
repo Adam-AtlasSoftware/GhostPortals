@@ -27,6 +27,8 @@ pub struct Status {
     pub incoming: Option<String>,
     pub encoder: Option<String>,
     pub decoder: Option<String>,
+    /// The other computer is clicking and typing in one of our windows.
+    pub controlled: bool,
     pub last_problem: Option<String>,
 }
 
@@ -53,6 +55,10 @@ impl Status {
             self.encoder = Some(what);
         } else if let Some(what) = after("decoding with ") {
             self.decoder = Some(what);
+        } else if line.contains("taking control of the window") {
+            self.controlled = true;
+        } else if line.contains("handing the window back") {
+            self.controlled = false;
         }
         if line.contains(" WARN ") || line.contains(" ERROR ") || line.starts_with("Error:") {
             self.last_problem = Some(line.to_owned());

@@ -237,6 +237,9 @@ impl Manager {
                     row(ui, "Connecting to", Some(self.settings.connect.trim()));
                 }
                 row(ui, "Sending", status.outgoing.as_deref());
+                if status.controlled {
+                    row(ui, "", Some("The other computer is using this window"));
+                }
                 row(ui, "Encoder", status.encoder.as_deref());
                 row(ui, "Receiving", status.incoming.as_deref());
                 row(ui, "Decoder", status.decoder.as_deref());
@@ -287,6 +290,10 @@ impl Manager {
                 );
                 ui.end_row();
             });
+            ui.checkbox(
+                &mut self.draft.remote_control,
+                "Let the other computer click and type in my windows",
+            );
             ui.checkbox(
                 &mut self.draft.autostart_daemon,
                 "Start sharing as soon as this window opens",

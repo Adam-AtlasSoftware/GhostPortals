@@ -16,6 +16,8 @@ pub struct Settings {
     pub autostart_daemon: bool,
     /// Look for a newer release when the manager opens.
     pub check_updates: bool,
+    /// Replay clicks and keys from the other computer's proxies here.
+    pub remote_control: bool,
 }
 
 impl Default for Settings {
@@ -27,6 +29,7 @@ impl Default for Settings {
             token: String::new(),
             autostart_daemon: true,
             check_updates: true,
+            remote_control: true,
         }
     }
 }
@@ -57,6 +60,9 @@ impl Settings {
             args.extend(["--listen".into(), format!("0.0.0.0:{}", self.listen_port)]);
         } else {
             args.extend(["--connect".into(), self.connect.trim().to_owned()]);
+        }
+        if !self.remote_control {
+            args.push("--no-remote-control".into());
         }
         args
     }
