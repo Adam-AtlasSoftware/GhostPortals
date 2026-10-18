@@ -54,16 +54,66 @@ pixels.
   hangs over the edge on purpose, and tracking it would echo it back to the
   peer.
 
-Still open: what happens when a drag ends mid-crossing (`is_dragging: false`
-with a non-zero overhang). Possible answers are snapping back, or committing
-the handoff by hiding the real window and keeping the proxy. The peer already
-receives that state.
+- Moving works both ways. While the user drags a proxy (by its top 32 px,
+  where the streamed title bar is), its daemon sends `ProxyMoved` with the
+  proxy's canvas position, and the source moves the real window there. Proxy
+  and real window share one canvas rectangle by construction, so no
+  translation is needed. While the proxy is being dragged, its daemon ignores
+  incoming placements so the two do not fight.
+
+A window dropped mid-crossing simply stays there: the session, and with it the
+stream, lasts until the window is fully back on its own side.
+
+## Streaming
+
+Remote desktop protocols were the original plan and do not fit. RDP RemoteApp
+runs apps in a *separate* Windows session, and Windows 10/11 Pro and
+Enterprise allow one interactive session, so connecting locks the physical
+screen. X11 forwarding starts new app instances instead of showing the live
+window, and cannot carry Wayland apps at all. So each daemon captures the
+live window itself:
+
+- **Windows**: `d3d11screencapturesrc` in Windows.Graphics.Capture mode,
+  bound to the window's HWND. It captures the whole window surface even
+  where it hangs off the screen.
+- **KWin**: `zkde_screencast_unstable_v1.stream_window(uuid)`, which streams
+  one window into PipeWire without a prompt, again including off-screen
+  parts. KWin offers this protocol only to executables that a `.desktop` file
+  grants it to, so the daemon writes one for itself
+  (`backend/kwin_cast.rs`). Version 6 of the protocol reports the PipeWire
+  *object serial*, which is what `pipewiresrc target-object` needs; passing
+  the node id there instead silently connects to some other source, such as
+  a webcam.
+- **GNOME and Hyprland** are not done yet. The plan is Mutter's
+  `org.gnome.Mutter.ScreenCast` `RecordWindow` and Hyprland's
+  `hyprland-toplevel-export-v1`. The generic desktop portal is no help, since
+  it asks the user to pick the window every time.
+
+The media crate builds the pipelines on GStreamer and picks, at runtime, the
+first H.264 encoder and decoder that exist on the machine (NVENC, QSV, AMF,
+Media Foundation or VA-API before x264/OpenH264, and D3D11/NVDEC/VA before
+libav), setting whichever low-latency properties each one has. Encoding uses
+constant bitrate, no B-frames and a keyframe every 120 frames.
+
+Frames travel on the control connection as binary frames (see below), in their
+own 10-frame queue. When that queue is full a frame is dropped, the sender
+skips deltas until the next keyframe and asks its encoder for one, so a slow
+network costs frames, not latency. A receiver that joins mid-stream or fails
+to decode sends `KeyframeRequest`.
+
+The receiving daemon owns its proxy: a GTK 4 window on Linux (app id
+`io.ghostportals.proxy`, which the backends recognise) and a Win32 popup on
+Windows. Both get decoded frames as RGBA/BGRA and draw them themselves, which
+keeps hit-testing in our hands for the drag strip and, next, input
+forwarding.
 
 ## Wire protocol
 
-TCP with `TCP_NODELAY`. Each frame is a 4-byte big-endian length followed by
-one JSON `Message` (core `protocol.rs`), tagged by `"type"`. The `sync` body is
-exactly the payload from the original spec.
+TCP with `TCP_NODELAY`. Each frame is a 4-byte big-endian length, a tag byte,
+and either one JSON `Message` (tag 0; core `protocol.rs`, tagged by `"type"`)
+or one encoded video frame (tag 1: stream id, keyframe flag, timestamp, H.264
+access unit). The `sync` body is exactly the payload from the original spec.
+Control messages always go out before queued video.
 
 Why this instead of WebSockets or gRPC:
 
@@ -112,11 +162,18 @@ reports geometry and supports `move position`).
 
 ## Windows
 
-The daemon polls `GetForegroundWindow` and `GetWindowRect` every 16 ms.
-`GetGUIThreadInfo` with `GUI_INMOVESIZE` tells whether the user is dragging.
-The proxy is found by title with `EnumWindows`, placed with `SetWindowPos`
-(`SWP_NOACTIVATE`), and clipped with `CreateRectRgn` + `SetWindowRgn`. Once
+The daemon polls `GetForegroundWindow` and the window's visible frame every
+16 ms. `GetGUIThreadInfo` with `GUI_INMOVESIZE` tells whether the user is
+dragging. The proxy is the daemon's own `WS_POPUP` tool window, drawn with
+`StretchDIBits`; its top strip answers `WM_NCHITTEST` with `HTCAPTION`, so
+Windows drags it natively. It is placed with `SetWindowPos`
+(`SWP_NOACTIVATE`) and clipped with `CreateRectRgn` + `SetWindowRgn`. Once
 `SetWindowRgn` succeeds, the system owns the region.
+
+The release zip bundles GStreamer: its DLLs beside the executable and the
+plugins the daemon uses in `gstreamer\plugins`, which the media crate points
+GStreamer at before initialising it. CI runs `selftest` from the unpacked zip
+with the system GStreamer hidden from `PATH`.
 
 `SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE)` would avoid polling and is the
 natural next step. Polling was kept to match the spec and to stay simple.
